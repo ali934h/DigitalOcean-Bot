@@ -14,13 +14,13 @@
  *   - Select size (plan)
  *   - Select operating system image
  *   - Auto-generated droplet name (can be customized)
- *   - Auto-generated strong password (can be customized)
- *   - Confirm creation before calling the API
+ *   - Uses SSH keys from your DigitalOcean account
  *
- * Droplet details:
+ * Droplet management:
  * - When selecting a droplet from the list, the bot shows detailed information
- *   (status, region, size, memory, vCPUs, disk, IP, created time, credentials)
+ *   (status, region, size, memory, vCPUs, disk, IP, created time, SSH access)
  *   and provides inline buttons to:
+ *   - Rebuild the droplet with a new OS
  *   - Delete the droplet (with a confirmation step)
  *   - Go back to the droplet list
  *
@@ -34,7 +34,7 @@
  * - A Cloudflare KV namespace (DROPLET_CREATION) is used to temporarily store
  *   droplet creation data between steps and to support a final confirmation
  *   before calling the DigitalOcean API.
- * - Droplet credentials (username and password) are stored in KV for later retrieval
+ * - All droplets use SSH key authentication (no passwords)
  *
  * Endpoints:
  * - /webhook         : Main Telegram webhook endpoint (POST)
@@ -45,6 +45,7 @@
  *   - KV namespace bound as: DROPLET_CREATION
  *   - Secrets set: TELEGRAM_BOT_TOKEN, DO_API_TOKEN, ALLOWED_USER_IDS
  * - Telegram bot webhook configured to point to: https://<worker-url>/webhook
+ * - At least one SSH key added to your DigitalOcean account
  *
  * Setup Instructions for New Deployment:
  *
@@ -59,50 +60,57 @@
  *    - Generate new token with Read & Write access
  *    - Copy and save the token (shown only once)
  *
- * 3. Get your Telegram User ID:
+ * 3. Add SSH Key to DigitalOcean:
+ *    - Generate SSH key: ssh-keygen -t rsa -b 4096
+ *    - Copy public key: cat ~/.ssh/id_rsa.pub
+ *    - Go to DigitalOcean Console → Settings → Security → SSH Keys
+ *    - Add your public key
+ *
+ * 4. Get your Telegram User ID:
  *    - Message @userinfobot on Telegram
  *    - Copy your numeric User ID
  *
- * 4. Install Wrangler CLI:
+ * 5. Install Wrangler CLI:
  *    npm install -g wrangler
  *
- * 5. Login to Cloudflare:
+ * 6. Login to Cloudflare:
  *    wrangler login
  *
- * 6. Create new Worker project:
+ * 7. Create new Worker project:
  *    wrangler init telegram-do-bot
  *    cd telegram-do-bot
  *
- * 7. Copy this code to src/index.js
+ * 8. Copy this code to src/index.js
  *
- * 8. Create KV namespace:
+ * 9. Create KV namespace:
  *    wrangler kv namespace create "DROPLET_CREATION"
  *    (Accept prompt to add to wrangler.toml)
  *
- * 9. Add secrets:
- *    wrangler secret put TELEGRAM_BOT_TOKEN
- *    (Paste your Telegram Bot Token)
+ * 10. Add secrets:
+ *     wrangler secret put TELEGRAM_BOT_TOKEN
+ *     (Paste your Telegram Bot Token)
  *
- *    wrangler secret put DO_API_TOKEN
- *    (Paste your DigitalOcean API Token)
+ *     wrangler secret put DO_API_TOKEN
+ *     (Paste your DigitalOcean API Token)
  *
- *    wrangler secret put ALLOWED_USER_IDS
- *    (Enter your Telegram User ID, for multiple users use comma: 123456,789012)
+ *     wrangler secret put ALLOWED_USER_IDS
+ *     (Enter your Telegram User ID, for multiple users use comma: 123456,789012)
  *
- * 10. Deploy:
+ * 11. Deploy:
  *     wrangler deploy
  *
- * 11. Register webhook:
+ * 12. Register webhook:
  *     Open in browser: https://your-worker-url.workers.dev/registerWebhook
  *     You should see: {"ok": true, "result": true, "description": "Webhook was set"}
  *
- * 12. Test the bot:
+ * 13. Test the bot:
  *     Open your Telegram bot and send /start
  *
  * Usage:
  * - Interact with the bot in Telegram using the commands above.
  * - All operations are performed through interactive inline buttons.
  * - The bot will guide you through each step of droplet creation.
+ * - All droplets use SSH key authentication for secure access.
  */
 
 export default {
@@ -175,32 +183,7 @@ async function handleMessage(message, env) {
 			// Delete the previous message
 			await deleteMessage(chatId, message.reply_to_message.message_id, env);
 
-			await askDropletPassword(chatId, text, region, size, image, env);
-			return;
-		} else if (replyText.includes('Auto-generated password:') && replyText.includes('Reply to this message to change the password')) {
-			// Extract data and create droplet
-			const lines = replyText.split('\n');
-			const name = lines
-				.find((l) => l.startsWith('Name:'))
-				?.split(':')[1]
-				.trim();
-			const region = lines
-				.find((l) => l.startsWith('Region:'))
-				?.split(':')[1]
-				.trim();
-			const size = lines
-				.find((l) => l.startsWith('Size:'))
-				?.split(':')[1]
-				.trim();
-			const image = lines
-				.find((l) => l.startsWith('Image:'))
-				?.split(':')[1]
-				.trim();
-
-			// Delete the previous message
-			await deleteMessage(chatId, message.reply_to_message.message_id, env);
-
-			await confirmDropletCreation(chatId, name, region, size, image, text, env);
+			await confirmDropletCreation(chatId, text, region, size, image, env);
 			return;
 		}
 	}
@@ -208,7 +191,7 @@ async function handleMessage(message, env) {
 	if (text === '/start') {
 		await sendMessage(
 			chatId,
-			'Welcome to DigitalOcean Management Bot!\n\nCommands:\n/droplets - List droplets\n/create - Create new droplet',
+			'Welcome to DigitalOcean Management Bot!\n\nCommands:\n/droplets - List droplets\n/create - Create new droplet\n\n🔐 This bot uses SSH keys for secure access.',
 			env
 		);
 	} else if (text === '/droplets') {
@@ -233,6 +216,15 @@ async function handleCallbackQuery(callbackQuery, env) {
 	if (data.startsWith('confirm_delete_')) {
 		const dropletId = data.replace('confirm_delete_', '');
 		await showDeleteConfirmation(chatId, messageId, dropletId, env);
+	} else if (data.startsWith('rebuild_')) {
+		const dropletId = data.replace('rebuild_', '');
+		await showRebuildOptions(chatId, messageId, dropletId, env);
+	} else if (data.startsWith('rbc_')) {
+		const sessionId = data.replace('rbc_', '');
+		await confirmRebuild(chatId, messageId, sessionId, env);
+	} else if (data.startsWith('rbe_')) {
+		const sessionId = data;
+		await executeRebuild(chatId, messageId, sessionId, env);
 	} else if (data.startsWith('droplet_')) {
 		const dropletId = data.replace('droplet_', '');
 		await showDropletDetails(chatId, messageId, dropletId, env);
@@ -243,7 +235,6 @@ async function handleCallbackQuery(callbackQuery, env) {
 		await editMessageToDropletList(chatId, messageId, env);
 	} else if (data.startsWith('region_')) {
 		const region = data.replace('region_', '');
-		// Delete previous message before showing next step
 		await deleteMessage(chatId, messageId, env);
 		await showSizes(chatId, region, env);
 	} else if (data === 'cancel_create') {
@@ -252,7 +243,6 @@ async function handleCallbackQuery(callbackQuery, env) {
 		const parts = data.replace('size_', '').split('_');
 		const region = parts[0];
 		const size = parts.slice(1).join('_');
-		// Delete previous message before showing next step
 		await deleteMessage(chatId, messageId, env);
 		await showImages(chatId, region, size, env);
 	} else if (data === 'back_to_regions') {
@@ -262,7 +252,6 @@ async function handleCallbackQuery(callbackQuery, env) {
 		const region = parts[0];
 		const size = parts[1];
 		const image = parts.slice(2).join('_');
-		// Delete previous message before showing next step
 		await deleteMessage(chatId, messageId, env);
 		await askDropletName(chatId, region, size, image, env);
 	} else if (data.startsWith('back_to_sizes_')) {
@@ -270,14 +259,8 @@ async function handleCallbackQuery(callbackQuery, env) {
 		await showSizes(chatId, messageId, region, env);
 	} else if (data.startsWith('use_default_name_')) {
 		const sessionId = data.replace('use_default_name_', '');
-		// Delete previous message before showing next step
 		await deleteMessage(chatId, messageId, env);
-		await useDefaultNameAndAskPassword(chatId, sessionId, env);
-	} else if (data.startsWith('use_default_pass_')) {
-		const sessionId = data.replace('use_default_pass_', '');
-		// Delete previous message before showing next step
-		await deleteMessage(chatId, messageId, env);
-		await useDefaultPasswordAndConfirm(chatId, sessionId, env);
+		await useDefaultNameAndConfirm(chatId, sessionId, env);
 	} else if (data.startsWith('confirmcreate_')) {
 		const creationId = data.replace('confirmcreate_', '');
 		await createDropletFromKV(chatId, messageId, creationId, env);
@@ -390,23 +373,6 @@ async function showRegions(chatId, env) {
 	});
 }
 
-// Generate random password (letters and numbers, not starting with number)
-function generatePassword(length = 16) {
-	const uppercase = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-	const lowercase = 'abcdefghijklmnopqrstuvwxyz';
-	const numbers = '0123456789';
-	const firstChar = uppercase + lowercase; // First char must be letter
-	const allChars = uppercase + lowercase + numbers;
-
-	let password = firstChar.charAt(Math.floor(Math.random() * firstChar.length));
-
-	for (let i = 1; i < length; i++) {
-		password += allChars.charAt(Math.floor(Math.random() * allChars.length));
-	}
-
-	return password;
-}
-
 // Generate default droplet name
 function generateDropletName(image, size, region) {
 	const imageSlug = image.split('-')[0]; // Get OS name like 'ubuntu'
@@ -425,19 +391,16 @@ async function showDropletDetails(chatId, messageId, dropletId, env) {
 	});
 
 	const data = await response.json();
+
+	if (!data.droplet) {
+		await editMessage(chatId, messageId, '❌ Droplet not found or has been deleted.', env);
+		return;
+	}
+
 	const droplet = data.droplet;
 
 	// Get public IPv4 address (not private)
 	const publicIPv4 = droplet.networks.v4.find((net) => net.type === 'public')?.ip_address || 'Not assigned yet';
-
-	// Try to get credentials from KV
-	const credsStr = await env.DROPLET_CREATION.get(`creds_${dropletId}`);
-	let credentialsSection = '';
-
-	if (credsStr) {
-		const creds = JSON.parse(credsStr);
-		credentialsSection = `\n*Credentials:*\nUsername: \`root\`\nPassword: \`${creds.password}\`\n`;
-	}
 
 	const details = `📦 *Droplet Details*
 
@@ -448,11 +411,16 @@ async function showDropletDetails(chatId, messageId, dropletId, env) {
 *Memory:* ${droplet.memory} MB
 *vCPUs:* ${droplet.vcpus}
 *Disk:* ${droplet.disk} GB
-*IP:* \`${publicIPv4}\`${credentialsSection}
+*IP:* \`${publicIPv4}\`
+
+*SSH Access:*
+\`ssh root@${publicIPv4}\`
+
 *Created:* ${new Date(droplet.created_at).toLocaleString()}`;
 
 	const keyboard = {
 		inline_keyboard: [
+			[{ text: '🔄 Rebuild Droplet', callback_data: `rebuild_${dropletId}` }],
 			[{ text: '🗑️ Delete Droplet', callback_data: `confirm_delete_${dropletId}` }],
 			[{ text: '◀️ Back to List', callback_data: 'back_to_list' }],
 		],
@@ -488,8 +456,6 @@ async function deleteDroplet(chatId, messageId, dropletId, env) {
 	});
 
 	if (response.status === 204) {
-		// Delete credentials from KV
-		await env.DROPLET_CREATION.delete(`creds_${dropletId}`);
 		await editMessage(chatId, messageId, '✅ Droplet deleted successfully!', env);
 	} else {
 		await editMessage(chatId, messageId, '❌ Failed to delete droplet.', env);
@@ -692,7 +658,7 @@ Reply to this message to change the name, or use the button below to continue wi
 	await sendMessage(chatId, text, env, keyboard);
 }
 
-async function useDefaultNameAndAskPassword(chatId, sessionId, env) {
+async function useDefaultNameAndConfirm(chatId, sessionId, env) {
 	const dataStr = await env.DROPLET_CREATION.get(sessionId);
 	if (!dataStr) {
 		await sendMessage(chatId, '❌ Session expired. Please try again with /create', env);
@@ -700,62 +666,46 @@ async function useDefaultNameAndAskPassword(chatId, sessionId, env) {
 	}
 
 	const data = JSON.parse(dataStr);
-	await askDropletPassword(chatId, data.defaultName, data.region, data.size, data.image, env);
+	await confirmDropletCreation(chatId, data.defaultName, data.region, data.size, data.image, env);
 	await env.DROPLET_CREATION.delete(sessionId);
 }
 
-async function askDropletPassword(chatId, name, region, size, image, env) {
-	// Generate random password
-	const defaultPassword = generatePassword(16);
+async function confirmDropletCreation(chatId, name, region, size, image, env) {
+	// Get SSH keys from DigitalOcean account
+	const keysUrl = 'https://api.digitalocean.com/v2/account/keys';
+	const keysResponse = await fetch(keysUrl, {
+		headers: {
+			Authorization: `Bearer ${env.DO_API_TOKEN}`,
+			'Content-Type': 'application/json',
+		},
+	});
 
-	// Store session data
-	const sessionId = `session_${chatId}_${Date.now()}`;
-	await env.DROPLET_CREATION.put(
-		sessionId,
-		JSON.stringify({
-			name: name,
-			region: region,
-			size: size,
-			image: image,
-			defaultPassword: defaultPassword,
-		}),
-		{ expirationTtl: 300 }
-	);
+	const keysData = await keysResponse.json();
+	const sshKeys = keysData.ssh_keys || [];
 
-	const text = `🔐 *Root Password*
+	if (sshKeys.length === 0) {
+		await sendMessage(
+			chatId,
+			`❌ *No SSH Keys Found*
 
-Name: ${name}
-Region: ${region}
-Size: ${size}
-Image: ${image}
+You need to add at least one SSH key to your DigitalOcean account before creating droplets.
 
-Auto-generated password: \`${defaultPassword}\`
+*How to add SSH key:*
+1. Go to DigitalOcean Console
+2. Settings → Security → SSH Keys
+3. Click "Add SSH Key"
+4. Paste your public key
 
-Reply to this message to change the password, or use the button below to continue with the auto-generated password.`;
+*Generate SSH key on your computer:*
+\`ssh-keygen -t rsa -b 4096\`
+\`cat ~/.ssh/id_rsa.pub\`
 
-	const keyboard = {
-		inline_keyboard: [
-			[{ text: '✅ Use Auto-Generated Password', callback_data: `use_default_pass_${sessionId}` }],
-			[{ text: '❌ Cancel', callback_data: 'cancel_create' }],
-		],
-	};
-
-	await sendMessage(chatId, text, env, keyboard);
-}
-
-async function useDefaultPasswordAndConfirm(chatId, sessionId, env) {
-	const dataStr = await env.DROPLET_CREATION.get(sessionId);
-	if (!dataStr) {
-		await sendMessage(chatId, '❌ Session expired. Please try again with /create', env);
+Then try /create again.`,
+			env
+		);
 		return;
 	}
 
-	const data = JSON.parse(dataStr);
-	await confirmDropletCreation(chatId, data.name, data.region, data.size, data.image, data.defaultPassword, env);
-	await env.DROPLET_CREATION.delete(sessionId);
-}
-
-async function confirmDropletCreation(chatId, name, region, size, image, password, env) {
 	// Store creation data in KV
 	const creationId = `create_${chatId}_${Date.now()}`;
 	await env.DROPLET_CREATION.put(
@@ -765,10 +715,12 @@ async function confirmDropletCreation(chatId, name, region, size, image, passwor
 			region: region,
 			size: size,
 			image: image,
-			password: password,
+			sshKeyIds: sshKeys.map((key) => key.id),
 		}),
 		{ expirationTtl: 300 }
-	); // Expires in 5 minutes
+	);
+
+	const sshKeysList = sshKeys.map((key) => `• ${key.name}`).join('\n');
 
 	const text = `⚠️ *Confirm Droplet Creation*
 
@@ -776,8 +728,9 @@ async function confirmDropletCreation(chatId, name, region, size, image, passwor
 *Region:* ${region}
 *Size:* ${size}
 *Image:* ${image}
-*Username:* \`root\`
-*Password:* \`${password}\`
+
+*SSH Keys (${sshKeys.length}):*
+${sshKeysList}
 
 Are you sure you want to create this droplet?`;
 
@@ -813,11 +766,10 @@ async function createDropletFromKV(chatId, messageId, creationId, env) {
 		region: data.region,
 		size: data.size,
 		image: data.image,
-		ssh_keys: [],
+		ssh_keys: data.sshKeyIds,
 		backups: false,
 		ipv6: false,
 		monitoring: true,
-		user_data: `#!/bin/bash\necho 'root:${data.password}' | chpasswd`,
 	};
 
 	const response = await fetch(url, {
@@ -832,14 +784,7 @@ async function createDropletFromKV(chatId, messageId, creationId, env) {
 	const result = await response.json();
 
 	if (response.ok && result.droplet) {
-		// Store credentials in KV (no expiration - permanent storage)
-		await env.DROPLET_CREATION.put(
-			`creds_${result.droplet.id}`,
-			JSON.stringify({
-				username: 'root',
-				password: data.password,
-			})
-		);
+		const publicIPv4 = result.droplet.networks.v4.find((net) => net.type === 'public')?.ip_address || 'Assigning...';
 
 		const successText = `✅ *Droplet Created Successfully!*
 
@@ -847,14 +792,14 @@ async function createDropletFromKV(chatId, messageId, creationId, env) {
 *ID:* ${result.droplet.id}
 *Status:* ${result.droplet.status}
 *Region:* ${result.droplet.region.slug}
+*IP:* \`${publicIPv4}\`
 
-*Credentials:*
-Username: \`root\`
-Password: \`${data.password}\`
+*SSH Access:*
+\`ssh root@${publicIPv4}\`
 
 ⏳ The droplet is being created. IP address will be assigned shortly.
 
-Use /droplets to check the status and get the IP address.`;
+Use /droplets to check the status.`;
 
 		await editMessage(chatId, messageId, successText, env);
 
@@ -862,5 +807,211 @@ Use /droplets to check the status and get the IP address.`;
 		await env.DROPLET_CREATION.delete(creationId);
 	} else {
 		await editMessage(chatId, messageId, `❌ Failed to create droplet: ${result.message || 'Unknown error'}`, env);
+	}
+}
+
+async function showRebuildOptions(chatId, messageId, dropletId, env) {
+	const url = 'https://api.digitalocean.com/v2/images?type=distribution&per_page=100';
+
+	const response = await fetch(url, {
+		headers: {
+			Authorization: `Bearer ${env.DO_API_TOKEN}`,
+			'Content-Type': 'application/json',
+		},
+	});
+
+	const data = await response.json();
+
+	// Filter popular OS images
+	const popularImages = data.images
+		.filter(
+			(img) =>
+				img.status === 'available' &&
+				(img.slug?.includes('ubuntu') ||
+					img.slug?.includes('debian') ||
+					img.slug?.includes('centos') ||
+					img.slug?.includes('fedora') ||
+					img.slug?.includes('rocky'))
+		)
+		.slice(0, 10);
+
+	// Create keyboard with image buttons using SHORT session IDs
+	const keyboard = [];
+
+	for (let i = 0; i < popularImages.length; i++) {
+		const image = popularImages[i];
+		const imageSlug = image.slug || String(image.id);
+
+		// Create very short session ID
+		const timestamp = Date.now().toString(36);
+		const random = Math.random().toString(36).substr(2, 3);
+		const sessionId = `rb${i}_${timestamp}_${random}`;
+
+		// Store in KV
+		await env.DROPLET_CREATION.put(
+			sessionId,
+			JSON.stringify({
+				dropletId: dropletId,
+				imageSlug: imageSlug,
+			}),
+			{ expirationTtl: 300 }
+		);
+
+		const callbackData = `rbc_${sessionId}`;
+
+		keyboard.push([
+			{
+				text: image.name,
+				callback_data: callbackData,
+			},
+		]);
+	}
+
+	keyboard.push([{ text: '◀️ Back to Details', callback_data: `droplet_${dropletId}` }]);
+
+	await editMessage(
+		chatId,
+		messageId,
+		'🔄 *Select Operating System for Rebuild*\n\n⚠️ Warning: All data on this droplet will be erased!',
+		env,
+		{
+			inline_keyboard: keyboard,
+		}
+	);
+}
+
+async function confirmRebuild(chatId, messageId, sessionId, env) {
+	// Get data from KV
+	const dataStr = await env.DROPLET_CREATION.get(sessionId);
+
+	if (!dataStr) {
+		await editMessage(chatId, messageId, '❌ Session expired. Please try again.', env);
+		return;
+	}
+
+	const data = JSON.parse(dataStr);
+	const dropletId = data.dropletId;
+	const imageSlug = data.imageSlug;
+
+	const text = `⚠️ *Confirm Rebuild*
+
+Are you sure you want to rebuild this droplet?
+
+*Droplet ID:* ${dropletId}
+*New OS:* ${imageSlug}
+
+*WARNING:*
+• All data will be permanently deleted
+• The droplet will be offline during rebuild
+• IP address will remain the same
+• Your SSH keys will be added automatically
+
+This action cannot be undone!`;
+
+	// Create new short session for execute
+	const execSessionId = `rbe_${Date.now().toString(36)}_${Math.random().toString(36).substr(2, 3)}`;
+	await env.DROPLET_CREATION.put(
+		execSessionId,
+		JSON.stringify({
+			dropletId: dropletId,
+			imageSlug: imageSlug,
+		}),
+		{ expirationTtl: 300 }
+	);
+
+	const keyboard = {
+		inline_keyboard: [
+			[
+				{ text: '✅ Yes, Rebuild Now', callback_data: execSessionId },
+				{ text: '❌ Cancel', callback_data: `droplet_${dropletId}` },
+			],
+		],
+	};
+
+	await editMessage(chatId, messageId, text, env, keyboard);
+}
+
+async function executeRebuild(chatId, messageId, sessionId, env) {
+	const dataStr = await env.DROPLET_CREATION.get(sessionId);
+
+	if (!dataStr) {
+		await editMessage(chatId, messageId, '❌ Session expired. Please try again.', env);
+		return;
+	}
+
+	const data = JSON.parse(dataStr);
+	const dropletId = data.dropletId;
+	const imageSlug = data.imageSlug;
+
+	await editMessage(chatId, messageId, '⏳ Rebuilding droplet... Please wait.', env);
+
+	// Get SSH keys from DigitalOcean account
+	const keysUrl = 'https://api.digitalocean.com/v2/account/keys';
+	const keysResponse = await fetch(keysUrl, {
+		headers: {
+			Authorization: `Bearer ${env.DO_API_TOKEN}`,
+			'Content-Type': 'application/json',
+		},
+	});
+
+	const keysData = await keysResponse.json();
+	const sshKeys = keysData.ssh_keys || [];
+
+	if (sshKeys.length === 0) {
+		await editMessage(
+			chatId,
+			messageId,
+			`❌ *No SSH Keys Found*
+
+You need to add at least one SSH key to your DigitalOcean account before rebuilding.
+
+Go to DigitalOcean Console → Settings → Security → SSH Keys`,
+			env
+		);
+		return;
+	}
+
+	const url = `https://api.digitalocean.com/v2/droplets/${dropletId}/actions`;
+
+	const body = {
+		type: 'rebuild',
+		image: imageSlug,
+		ssh_keys: sshKeys.map((key) => key.id),
+	};
+
+	const response = await fetch(url, {
+		method: 'POST',
+		headers: {
+			Authorization: `Bearer ${env.DO_API_TOKEN}`,
+			'Content-Type': 'application/json',
+		},
+		body: JSON.stringify(body),
+	});
+
+	const result = await response.json();
+
+	if (response.ok && result.action) {
+		const successText = `✅ *Rebuild Started Successfully!*
+
+*Droplet ID:* ${dropletId}
+*New OS:* ${imageSlug}
+*Action ID:* ${result.action.id}
+*Status:* ${result.action.status}
+
+*SSH Keys Added:* ${sshKeys.length}
+
+⏳ The rebuild process has started. It may take several minutes to complete.
+
+After completion, connect with:
+\`ssh root@<droplet-ip>\`
+
+Use /droplets to check the status and get the IP address.`;
+
+		await editMessage(chatId, messageId, successText, env);
+
+		// Delete session from KV
+		await env.DROPLET_CREATION.delete(sessionId);
+	} else {
+		await editMessage(chatId, messageId, `❌ Failed to rebuild droplet: ${result.message || 'Unknown error'}`, env);
 	}
 }
