@@ -8,6 +8,7 @@
  *
  * Main features:
  * - /start      : Show welcome message and available commands
+ * - /setapi     : Configure your DigitalOcean API token
  * - /droplets   : List existing Droplets as inline buttons
  * - /create     : Interactive flow to create a new Droplet
  *   - Select region
@@ -27,13 +28,14 @@
  * Security and access control:
  * - Only whitelisted Telegram user IDs (defined in ALLOWED_USER_IDS) are allowed
  *   to use the bot. All other users receive an "Access denied" message.
+ * - Each user stores their own DigitalOcean API token securely in KV
  * - The bot uses Cloudflare Workers Secrets for:
  *   - TELEGRAM_BOT_TOKEN : Telegram bot token
- *   - DO_API_TOKEN       : DigitalOcean API token (with write access)
  *   - ALLOWED_USER_IDS   : Comma-separated list of allowed Telegram user IDs
- * - A Cloudflare KV namespace (DROPLET_CREATION) is used to temporarily store
- *   droplet creation data between steps and to support a final confirmation
- *   before calling the DigitalOcean API.
+ * - A Cloudflare KV namespace (DROPLET_CREATION) is used to:
+ *   - Store user API tokens
+ *   - Temporarily store droplet creation data between steps
+ *   - Support final confirmation before calling the DigitalOcean API
  * - All droplets use SSH key authentication (no passwords)
  *
  * Endpoints:
@@ -43,9 +45,10 @@
  * Requirements:
  * - Cloudflare Worker project with:
  *   - KV namespace bound as: DROPLET_CREATION
- *   - Secrets set: TELEGRAM_BOT_TOKEN, DO_API_TOKEN, ALLOWED_USER_IDS
+ *   - Secrets set: TELEGRAM_BOT_TOKEN, ALLOWED_USER_IDS
  * - Telegram bot webhook configured to point to: https://<worker-url>/webhook
  * - At least one SSH key added to your DigitalOcean account
+ * - Users must configure their API token via /setapi command
  *
  * Setup Instructions for New Deployment:
  *
@@ -54,60 +57,49 @@
  *    - Send /newbot command
  *    - Follow prompts to get your Bot Token
  *
- * 2. Get DigitalOcean API Token:
- *    - Log in to DigitalOcean account
- *    - Go to API section in settings
- *    - Generate new token with Read & Write access
- *    - Copy and save the token (shown only once)
- *
- * 3. Add SSH Key to DigitalOcean:
- *    - Generate SSH key: ssh-keygen -t rsa -b 4096
- *    - Copy public key: cat ~/.ssh/id_rsa.pub
- *    - Go to DigitalOcean Console → Settings → Security → SSH Keys
- *    - Add your public key
- *
- * 4. Get your Telegram User ID:
+ * 2. Get your Telegram User ID:
  *    - Message @userinfobot on Telegram
  *    - Copy your numeric User ID
  *
- * 5. Install Wrangler CLI:
+ * 3. Install Wrangler CLI:
  *    npm install -g wrangler
  *
- * 6. Login to Cloudflare:
+ * 4. Login to Cloudflare:
  *    wrangler login
  *
- * 7. Create new Worker project:
+ * 5. Create new Worker project:
  *    wrangler init telegram-do-bot
  *    cd telegram-do-bot
  *
- * 8. Copy this code to src/index.js
+ * 6. Copy this code to src/index.js
  *
- * 9. Create KV namespace:
+ * 7. Create KV namespace:
  *    wrangler kv namespace create "DROPLET_CREATION"
  *    (Accept prompt to add to wrangler.toml)
  *
- * 10. Add secrets:
- *     wrangler secret put TELEGRAM_BOT_TOKEN
- *     (Paste your Telegram Bot Token)
+ * 8. Add secrets:
+ *    wrangler secret put TELEGRAM_BOT_TOKEN
+ *    (Paste your Telegram Bot Token)
  *
- *     wrangler secret put DO_API_TOKEN
- *     (Paste your DigitalOcean API Token)
+ *    wrangler secret put ALLOWED_USER_IDS
+ *    (Enter your Telegram User ID, for multiple users use comma: 123456,789012)
  *
- *     wrangler secret put ALLOWED_USER_IDS
- *     (Enter your Telegram User ID, for multiple users use comma: 123456,789012)
+ * 9. Deploy:
+ *    wrangler deploy
  *
- * 11. Deploy:
- *     wrangler deploy
- *
- * 12. Register webhook:
+ * 10. Register webhook:
  *     Open in browser: https://your-worker-url.workers.dev/registerWebhook
  *     You should see: {"ok": true, "result": true, "description": "Webhook was set"}
  *
- * 13. Test the bot:
+ * 11. Test the bot:
  *     Open your Telegram bot and send /start
+ *
+ * 12. Configure API token:
+ *     Send /setapi and follow the instructions to add your DigitalOcean API token
  *
  * Usage:
  * - Interact with the bot in Telegram using the commands above.
+ * - Each user can configure their own DigitalOcean API token.
  * - All operations are performed through interactive inline buttons.
  * - The bot will guide you through each step of droplet creation.
  * - All droplets use SSH key authentication for secure access.
@@ -148,6 +140,84 @@ export default {
 	},
 };
 
+// === API TOKEN MANAGEMENT ===
+
+// Save user's API token to KV
+async function saveUserApiToken(userId, apiToken, env) {
+	const key = `api_token_${userId}`;
+	
+	// Delete all user sessions when changing API token
+	await clearUserSessions(userId, env);
+	
+	// Save new API token (no expiration - permanent storage)
+	await env.DROPLET_CREATION.put(key, apiToken);
+}
+
+// Get user's API token from KV
+async function getUserApiToken(userId, env) {
+	const key = `api_token_${userId}`;
+	return await env.DROPLET_CREATION.get(key);
+}
+
+// Clear all sessions for a user (when changing API token)
+async function clearUserSessions(userId, env) {
+	// List all keys with this user's sessions
+	const listResult = await env.DROPLET_CREATION.list({ prefix: `session_${userId}_` });
+	const createListResult = await env.DROPLET_CREATION.list({ prefix: `create_${userId}_` });
+	const rebuildListResult = await env.DROPLET_CREATION.list({ prefix: `rb` });
+	
+	// Delete all session keys
+	const allKeys = [
+		...listResult.keys.map(k => k.name),
+		...createListResult.keys.map(k => k.name),
+		...rebuildListResult.keys.map(k => k.name)
+	];
+	
+	for (const key of allKeys) {
+		await env.DROPLET_CREATION.delete(key);
+	}
+}
+
+// Ask user for API token
+async function askForApiToken(chatId, env) {
+	const hasExisting = await getUserApiToken(chatId, env);
+	
+	const text = hasExisting
+		? `🔑 *Change DigitalOcean API Token*
+
+⚠️ *Warning:* Changing your API token will:
+• Clear all active sessions
+• Require re-authentication
+• Switch to a different DigitalOcean account
+
+Please reply to this message with your new DigitalOcean API token.
+
+*How to get your API token:*
+1. Go to [DigitalOcean Console](https://cloud.digitalocean.com/)
+2. Settings → API → Tokens/Keys
+3. Generate New Token (Read & Write)
+4. Copy and send it here
+
+🔒 Your token will be stored securely and deleted from chat immediately.`
+		: `🔑 *Setup DigitalOcean API Token*
+
+To use this bot, you need to provide your DigitalOcean API token.
+
+Please reply to this message with your DigitalOcean API token.
+
+*How to get your API token:*
+1. Go to [DigitalOcean Console](https://cloud.digitalocean.com/)
+2. Settings → API → Tokens/Keys
+3. Generate New Token (Read & Write)
+4. Copy and send it here
+
+🔒 Your token will be stored securely and deleted from chat immediately.`;
+
+	await sendMessage(chatId, text, env);
+}
+
+// === MESSAGE HANDLERS ===
+
 async function handleMessage(message, env) {
 	const chatId = message.chat.id;
 	const userId = message.from.id;
@@ -160,9 +230,21 @@ async function handleMessage(message, env) {
 		return;
 	}
 
-	// Check if this is a reply to our bot's message (for droplet creation flow)
+	// Check if this is a reply to API token request
 	if (message.reply_to_message && message.reply_to_message.text) {
 		const replyText = message.reply_to_message.text;
+
+		if (replyText.includes('Please reply to this message with your') && replyText.includes('DigitalOcean API token')) {
+			// Delete the request message
+			await deleteMessage(chatId, message.reply_to_message.message_id, env);
+			// Delete user's token message for security
+			await deleteMessage(chatId, message.message_id, env);
+			
+			// Save API token
+			await saveUserApiToken(chatId, text.trim(), env);
+			await sendMessage(chatId, '✅ API token saved successfully!\n\nYou can now use /droplets and /create commands.', env);
+			return;
+		}
 
 		if (replyText.includes('Default name:') && replyText.includes('Reply to this message to change the name')) {
 			// Extract region, size, image from the message
@@ -189,11 +271,14 @@ async function handleMessage(message, env) {
 	}
 
 	if (text === '/start') {
-		await sendMessage(
-			chatId,
-			'Welcome to DigitalOcean Management Bot!\n\nCommands:\n/droplets - List droplets\n/create - Create new droplet\n\n🔐 This bot uses SSH keys for secure access.',
-			env
-		);
+		const hasApiToken = await getUserApiToken(chatId, env);
+		const welcomeMsg = hasApiToken
+			? 'Welcome to DigitalOcean Management Bot!\n\nCommands:\n/droplets - List droplets\n/create - Create new droplet\n/setapi - Change API token\n\n🔐 This bot uses SSH keys for secure access.'
+			: 'Welcome to DigitalOcean Management Bot!\n\n⚠️ You need to set your DigitalOcean API token first.\n\nUse /setapi to get started.';
+		
+		await sendMessage(chatId, welcomeMsg, env);
+	} else if (text === '/setapi') {
+		await askForApiToken(chatId, env);
 	} else if (text === '/droplets') {
 		await listDroplets(chatId, env);
 	} else if (text === '/create') {
@@ -267,6 +352,8 @@ async function handleCallbackQuery(callbackQuery, env) {
 	}
 }
 
+// === TELEGRAM HELPERS ===
+
 async function sendMessage(chatId, text, env, replyMarkup = null) {
 	const url = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`;
 	const body = {
@@ -304,12 +391,46 @@ async function deleteMessage(chatId, messageId, env) {
 	});
 }
 
+async function editMessage(chatId, messageId, text, env, replyMarkup = null) {
+	const url = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`;
+	const body = {
+		chat_id: chatId,
+		message_id: messageId,
+		text: text,
+		parse_mode: 'Markdown',
+	};
+
+	if (replyMarkup) {
+		body.reply_markup = replyMarkup;
+	}
+
+	await fetch(url, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(body),
+	});
+}
+
+// === DROPLET OPERATIONS ===
+
 async function listDroplets(chatId, env) {
+	// Get user's API token
+	const apiToken = await getUserApiToken(chatId, env);
+	
+	if (!apiToken) {
+		await sendMessage(
+			chatId, 
+			'❌ No API token found.\n\nPlease use /setapi to configure your DigitalOcean API token first.', 
+			env
+		);
+		return;
+	}
+
 	const url = 'https://api.digitalocean.com/v2/droplets';
 
 	const response = await fetch(url, {
 		headers: {
-			Authorization: `Bearer ${env.DO_API_TOKEN}`,
+			Authorization: `Bearer ${apiToken}`,
 			'Content-Type': 'application/json',
 		},
 	});
@@ -335,11 +456,23 @@ async function listDroplets(chatId, env) {
 }
 
 async function showRegions(chatId, env) {
+	// Get user's API token
+	const apiToken = await getUserApiToken(chatId, env);
+	
+	if (!apiToken) {
+		await sendMessage(
+			chatId, 
+			'❌ No API token found.\n\nPlease use /setapi to configure your DigitalOcean API token first.', 
+			env
+		);
+		return;
+	}
+
 	const url = 'https://api.digitalocean.com/v2/regions';
 
 	const response = await fetch(url, {
 		headers: {
-			Authorization: `Bearer ${env.DO_API_TOKEN}`,
+			Authorization: `Bearer ${apiToken}`,
 			'Content-Type': 'application/json',
 		},
 	});
@@ -381,11 +514,19 @@ function generateDropletName(image, size, region) {
 }
 
 async function showDropletDetails(chatId, messageId, dropletId, env) {
+	// Get user's API token
+	const apiToken = await getUserApiToken(chatId, env);
+	
+	if (!apiToken) {
+		await editMessage(chatId, messageId, '❌ No API token found. Please use /setapi first.', env);
+		return;
+	}
+
 	const url = `https://api.digitalocean.com/v2/droplets/${dropletId}`;
 
 	const response = await fetch(url, {
 		headers: {
-			Authorization: `Bearer ${env.DO_API_TOKEN}`,
+			Authorization: `Bearer ${apiToken}`,
 			'Content-Type': 'application/json',
 		},
 	});
@@ -445,12 +586,20 @@ async function showDeleteConfirmation(chatId, messageId, dropletId, env) {
 }
 
 async function deleteDroplet(chatId, messageId, dropletId, env) {
+	// Get user's API token
+	const apiToken = await getUserApiToken(chatId, env);
+	
+	if (!apiToken) {
+		await editMessage(chatId, messageId, '❌ No API token found. Please use /setapi first.', env);
+		return;
+	}
+
 	const url = `https://api.digitalocean.com/v2/droplets/${dropletId}`;
 
 	const response = await fetch(url, {
 		method: 'DELETE',
 		headers: {
-			Authorization: `Bearer ${env.DO_API_TOKEN}`,
+			Authorization: `Bearer ${apiToken}`,
 			'Content-Type': 'application/json',
 		},
 	});
@@ -463,11 +612,19 @@ async function deleteDroplet(chatId, messageId, dropletId, env) {
 }
 
 async function editMessageToDropletList(chatId, messageId, env) {
+	// Get user's API token
+	const apiToken = await getUserApiToken(chatId, env);
+	
+	if (!apiToken) {
+		await editMessage(chatId, messageId, '❌ No API token found. Please use /setapi first.', env);
+		return;
+	}
+
 	const url = 'https://api.digitalocean.com/v2/droplets';
 
 	const response = await fetch(url, {
 		headers: {
-			Authorization: `Bearer ${env.DO_API_TOKEN}`,
+			Authorization: `Bearer ${apiToken}`,
 			'Content-Type': 'application/json',
 		},
 	});
@@ -491,32 +648,20 @@ async function editMessageToDropletList(chatId, messageId, env) {
 	});
 }
 
-async function editMessage(chatId, messageId, text, env, replyMarkup = null) {
-	const url = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`;
-	const body = {
-		chat_id: chatId,
-		message_id: messageId,
-		text: text,
-		parse_mode: 'Markdown',
-	};
-
-	if (replyMarkup) {
-		body.reply_markup = replyMarkup;
+async function showSizes(chatId, region, env) {
+	// Get user's API token
+	const apiToken = await getUserApiToken(chatId, env);
+	
+	if (!apiToken) {
+		await sendMessage(chatId, '❌ No API token found. Please use /setapi first.', env);
+		return;
 	}
 
-	await fetch(url, {
-		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify(body),
-	});
-}
-
-async function showSizes(chatId, region, env) {
 	const url = 'https://api.digitalocean.com/v2/sizes';
 
 	const response = await fetch(url, {
 		headers: {
-			Authorization: `Bearer ${env.DO_API_TOKEN}`,
+			Authorization: `Bearer ${apiToken}`,
 			'Content-Type': 'application/json',
 		},
 	});
@@ -545,11 +690,19 @@ async function showSizes(chatId, region, env) {
 }
 
 async function showImages(chatId, region, size, env) {
+	// Get user's API token
+	const apiToken = await getUserApiToken(chatId, env);
+	
+	if (!apiToken) {
+		await sendMessage(chatId, '❌ No API token found. Please use /setapi first.', env);
+		return;
+	}
+
 	const url = 'https://api.digitalocean.com/v2/images?type=distribution&per_page=100';
 
 	const response = await fetch(url, {
 		headers: {
-			Authorization: `Bearer ${env.DO_API_TOKEN}`,
+			Authorization: `Bearer ${apiToken}`,
 			'Content-Type': 'application/json',
 		},
 	});
@@ -586,11 +739,19 @@ async function showImages(chatId, region, size, env) {
 }
 
 async function showRegionsEdit(chatId, messageId, env) {
+	// Get user's API token
+	const apiToken = await getUserApiToken(chatId, env);
+	
+	if (!apiToken) {
+		await editMessage(chatId, messageId, '❌ No API token found. Please use /setapi first.', env);
+		return;
+	}
+
 	const url = 'https://api.digitalocean.com/v2/regions';
 
 	const response = await fetch(url, {
 		headers: {
-			Authorization: `Bearer ${env.DO_API_TOKEN}`,
+			Authorization: `Bearer ${apiToken}`,
 			'Content-Type': 'application/json',
 		},
 	});
@@ -671,11 +832,19 @@ async function useDefaultNameAndConfirm(chatId, sessionId, env) {
 }
 
 async function confirmDropletCreation(chatId, name, region, size, image, env) {
+	// Get user's API token
+	const apiToken = await getUserApiToken(chatId, env);
+	
+	if (!apiToken) {
+		await sendMessage(chatId, '❌ No API token found. Please use /setapi first.', env);
+		return;
+	}
+
 	// Get SSH keys from DigitalOcean account
 	const keysUrl = 'https://api.digitalocean.com/v2/account/keys';
 	const keysResponse = await fetch(keysUrl, {
 		headers: {
-			Authorization: `Bearer ${env.DO_API_TOKEN}`,
+			Authorization: `Bearer ${apiToken}`,
 			'Content-Type': 'application/json',
 		},
 	});
@@ -747,6 +916,14 @@ Are you sure you want to create this droplet?`;
 }
 
 async function createDropletFromKV(chatId, messageId, creationId, env) {
+	// Get user's API token
+	const apiToken = await getUserApiToken(chatId, env);
+	
+	if (!apiToken) {
+		await editMessage(chatId, messageId, '❌ No API token found. Please use /setapi first.', env);
+		return;
+	}
+
 	// Get data from KV
 	const dataStr = await env.DROPLET_CREATION.get(creationId);
 
@@ -775,7 +952,7 @@ async function createDropletFromKV(chatId, messageId, creationId, env) {
 	const response = await fetch(url, {
 		method: 'POST',
 		headers: {
-			Authorization: `Bearer ${env.DO_API_TOKEN}`,
+			Authorization: `Bearer ${apiToken}`,
 			'Content-Type': 'application/json',
 		},
 		body: JSON.stringify(body),
@@ -811,11 +988,19 @@ Use /droplets to check the status.`;
 }
 
 async function showRebuildOptions(chatId, messageId, dropletId, env) {
+	// Get user's API token
+	const apiToken = await getUserApiToken(chatId, env);
+	
+	if (!apiToken) {
+		await editMessage(chatId, messageId, '❌ No API token found. Please use /setapi first.', env);
+		return;
+	}
+
 	const url = 'https://api.digitalocean.com/v2/images?type=distribution&per_page=100';
 
 	const response = await fetch(url, {
 		headers: {
-			Authorization: `Bearer ${env.DO_API_TOKEN}`,
+			Authorization: `Bearer ${apiToken}`,
 			'Content-Type': 'application/json',
 		},
 	});
@@ -932,6 +1117,14 @@ This action cannot be undone!`;
 }
 
 async function executeRebuild(chatId, messageId, sessionId, env) {
+	// Get user's API token
+	const apiToken = await getUserApiToken(chatId, env);
+	
+	if (!apiToken) {
+		await editMessage(chatId, messageId, '❌ No API token found. Please use /setapi first.', env);
+		return;
+	}
+
 	const dataStr = await env.DROPLET_CREATION.get(sessionId);
 
 	if (!dataStr) {
@@ -949,7 +1142,7 @@ async function executeRebuild(chatId, messageId, sessionId, env) {
 	const keysUrl = 'https://api.digitalocean.com/v2/account/keys';
 	const keysResponse = await fetch(keysUrl, {
 		headers: {
-			Authorization: `Bearer ${env.DO_API_TOKEN}`,
+			Authorization: `Bearer ${apiToken}`,
 			'Content-Type': 'application/json',
 		},
 	});
@@ -982,7 +1175,7 @@ Go to DigitalOcean Console → Settings → Security → SSH Keys`,
 	const response = await fetch(url, {
 		method: 'POST',
 		headers: {
-			Authorization: `Bearer ${env.DO_API_TOKEN}`,
+			Authorization: `Bearer ${apiToken}`,
 			'Content-Type': 'application/json',
 		},
 		body: JSON.stringify(body),
