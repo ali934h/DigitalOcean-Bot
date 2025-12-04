@@ -1,5 +1,5 @@
 /**
- * Telegram DigitalOcean Management Bot (Cloudflare Workers)
+ * Telegram DigitalOcean Management Bot (Cloudflare Workers).
  *
  * Overview:
  * This Worker implements a Telegram bot that can manage DigitalOcean Droplets
