@@ -29,6 +29,7 @@
  * - Only whitelisted Telegram user IDs (defined in ALLOWED_USER_IDS) are allowed
  *   to use the bot. All other users receive an "Access denied" message.
  * - Each user stores their own DigitalOcean API token securely in KV
+ * - API tokens are validated before saving to prevent invalid credentials
  * - The bot uses Cloudflare Workers Secrets for:
  *   - TELEGRAM_BOT_TOKEN : Telegram bot token
  *   - ALLOWED_USER_IDS   : Comma-separated list of allowed Telegram user IDs
@@ -142,39 +143,66 @@ export default {
 
 // === API TOKEN MANAGEMENT ===
 
-// Save user's API token to KV
+// Save user's API token to KV (with validation)
 async function saveUserApiToken(userId, apiToken, env) {
 	const key = `api_token_${userId}`;
 	
-	// Delete all user sessions when changing API token
-	await clearUserSessions(userId, env);
-	
-	// Save new API token (no expiration - permanent storage)
-	await env.DROPLET_CREATION.put(key, apiToken);
+	// Validate API token by testing it
+	try {
+		const testUrl = 'https://api.digitalocean.com/v2/account';
+		const testResponse = await fetch(testUrl, {
+			headers: {
+				Authorization: `Bearer ${apiToken}`,
+				'Content-Type': 'application/json',
+			},
+		});
+		
+		if (!testResponse.ok) {
+			return false; // Invalid token
+		}
+		
+		// Delete all user sessions when changing API token
+		await clearUserSessions(userId, env);
+		
+		// Save new API token (no expiration - permanent storage)
+		await env.DROPLET_CREATION.put(key, apiToken);
+		
+		return true; // Valid token
+	} catch (error) {
+		console.error('Error validating API token:', error);
+		return false;
+	}
 }
 
-// Get user's API token from KV
+// Get user's API token from KV (with error handling)
 async function getUserApiToken(userId, env) {
-	const key = `api_token_${userId}`;
-	return await env.DROPLET_CREATION.get(key);
+	try {
+		const key = `api_token_${userId}`;
+		return await env.DROPLET_CREATION.get(key);
+	} catch (error) {
+		console.error('Error getting API token:', error);
+		return null;
+	}
 }
 
 // Clear all sessions for a user (when changing API token)
 async function clearUserSessions(userId, env) {
-	// List all keys with this user's sessions
-	const listResult = await env.DROPLET_CREATION.list({ prefix: `session_${userId}_` });
-	const createListResult = await env.DROPLET_CREATION.list({ prefix: `create_${userId}_` });
-	const rebuildListResult = await env.DROPLET_CREATION.list({ prefix: `rb` });
-	
-	// Delete all session keys
-	const allKeys = [
-		...listResult.keys.map(k => k.name),
-		...createListResult.keys.map(k => k.name),
-		...rebuildListResult.keys.map(k => k.name)
-	];
-	
-	for (const key of allKeys) {
-		await env.DROPLET_CREATION.delete(key);
+	try {
+		// List all keys with this user's sessions
+		const listResult = await env.DROPLET_CREATION.list({ prefix: `session_${userId}_` });
+		const createListResult = await env.DROPLET_CREATION.list({ prefix: `create_${userId}_` });
+		
+		// Delete all session keys
+		const allKeys = [
+			...listResult.keys.map(k => k.name),
+			...createListResult.keys.map(k => k.name)
+		];
+		
+		for (const key of allKeys) {
+			await env.DROPLET_CREATION.delete(key);
+		}
+	} catch (error) {
+		console.error('Error clearing sessions:', error);
 	}
 }
 
@@ -198,7 +226,7 @@ Please reply to this message with your new DigitalOcean API token.
 3. Generate New Token (Read & Write)
 4. Copy and send it here
 
-🔒 Your token will be stored securely and deleted from chat immediately.`
+🔒 Your token will be validated and stored securely.`
 		: `🔑 *Setup DigitalOcean API Token*
 
 To use this bot, you need to provide your DigitalOcean API token.
@@ -211,7 +239,7 @@ Please reply to this message with your DigitalOcean API token.
 3. Generate New Token (Read & Write)
 4. Copy and send it here
 
-🔒 Your token will be stored securely and deleted from chat immediately.`;
+🔒 Your token will be validated and stored securely.`;
 
 	await sendMessage(chatId, text, env);
 }
@@ -240,9 +268,26 @@ async function handleMessage(message, env) {
 			// Delete user's token message for security
 			await deleteMessage(chatId, message.message_id, env);
 			
-			// Save API token
-			await saveUserApiToken(chatId, text.trim(), env);
-			await sendMessage(chatId, '✅ API token saved successfully!\n\nYou can now use /droplets and /create commands.', env);
+			// Send "validating" message
+			const validatingMsg = await sendMessage(chatId, '⏳ Validating your API token...', env);
+			
+			// Save API token (with validation)
+			const isValid = await saveUserApiToken(chatId, text.trim(), env);
+			
+			// Delete validating message
+			if (validatingMsg.result && validatingMsg.result.message_id) {
+				await deleteMessage(chatId, validatingMsg.result.message_id, env);
+			}
+			
+			if (isValid) {
+				await sendMessage(chatId, '✅ API token saved successfully!\n\nYou can now use /droplets and /create commands.', env);
+			} else {
+				await sendMessage(
+					chatId, 
+					'❌ Invalid API token!\n\nThe token you provided is not valid or doesn\'t have the required permissions.\n\nPlease:\n1. Check your token is correct\n2. Ensure it has Read & Write permissions\n3. Try /setapi again', 
+					env
+				);
+			}
 			return;
 		}
 
