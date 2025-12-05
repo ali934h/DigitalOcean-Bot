@@ -20,10 +20,11 @@ A **serverless Telegram bot** to manage DigitalOcean Droplets directly from Tele
 - **Delete Droplet** - Remove droplets with confirmation
 
 ### 🔐 Security Features
+- **Per-User API Tokens** - Each user stores their own DigitalOcean API token securely
 - **SSH Key Authentication** - Only SSH keys, no passwords
 - **User Whitelist** - Restrict access to specific Telegram user IDs
-- **Secure Credentials** - All sensitive data stored in Cloudflare Workers Secrets
-- **Session Management** - Temporary data storage with auto-expiration
+- **Secure Storage** - API tokens stored encrypted in Cloudflare KV
+- **Session Management** - Temporary data with auto-expiration
 
 ### ⚡ Technical Highlights
 - **Serverless Architecture** - Runs on Cloudflare's global edge network
@@ -33,61 +34,64 @@ A **serverless Telegram bot** to manage DigitalOcean Droplets directly from Tele
 - **Multi-step Wizard** - Guided droplet creation process
 - **Error Handling** - Comprehensive error messages and validations
 
-## 📸 Screenshots
-
-### Main Commands
-```
-/start     - Welcome message and help
-/droplets  - List all droplets
-/create    - Create new droplet
-```
-
-### Interactive Flow
-1. Select region → 2. Choose size → 3. Pick OS → 4. Name droplet → 5. Confirm → ✅ Created!
-
-## 🚀 Quick Start
+## 🚀 Quick Start Guide
 
 ### Prerequisites
-- [DigitalOcean Account](https://www.digitalocean.com/) with API token
-- [Cloudflare Account](https://www.cloudflare.com/)
-- [Telegram Account](https://telegram.org/)
-- [Node.js](https://nodejs.org/) v18+ installed
-- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/install-and-update/)
 
-### 1️⃣ Create Telegram Bot
+Before you begin, make sure you have:
+- A [Cloudflare account](https://dash.cloudflare.com/sign-up) (free tier works)
+- A [DigitalOcean account](https://www.digitalocean.com/)
+- A [Telegram account](https://telegram.org/)
+- [Node.js](https://nodejs.org/) v18 or higher installed
+
+### Step 1: Create Your Telegram Bot
+
+1. Open Telegram and search for [@BotFather](https://t.me/BotFather)
+2. Send `/newbot` command
+3. Follow the prompts:
+   - Choose a name (e.g., "My DO Manager")
+   - Choose a username (must end with `_bot`, e.g., `my_do_manager_bot`)
+4. **Save the bot token** (looks like `1234567890:ABCdefGHIjklMNOpqrsTUVwxyz`)
+
+### Step 2: Get Your Telegram User ID
+
+1. Open Telegram and search for [@userinfobot](https://t.me/userinfobot)
+2. Send any message to the bot
+3. **Copy your numeric User ID** (e.g., `123456789`)
+
+### Step 3: Prepare Your DigitalOcean Account
+
+#### 3.1: Add SSH Key (Required)
+
+You need at least one SSH key in your DigitalOcean account for secure droplet access.
 
 ```bash
-# Open Telegram and message @BotFather
-/newbot
-
-# Follow the prompts and save your bot token
-```
-
-### 2️⃣ Get DigitalOcean API Token
-
-1. Log in to [DigitalOcean](https://cloud.digitalocean.com/)
-2. Go to **API** → **Tokens/Keys**
-3. Generate New Token (Read & Write access)
-4. Copy and save the token ⚠️ (shown only once)
-
-### 3️⃣ Add SSH Key to DigitalOcean
-
-```bash
-# Generate SSH key (if you don't have one)
+# If you don't have an SSH key, generate one:
 ssh-keygen -t rsa -b 4096 -C "your_email@example.com"
+# Press Enter for all prompts (use default location and no passphrase)
 
-# Copy your public key
+# Display your public key:
 cat ~/.ssh/id_rsa.pub
+# Copy the entire output
 ```
 
-Then add it to DigitalOcean:
-- **Settings** → **Security** → **SSH Keys** → **Add SSH Key**
+Now add it to DigitalOcean:
+1. Go to [DigitalOcean Console](https://cloud.digitalocean.com/)
+2. Navigate to **Settings** → **Security** → **SSH Keys**
+3. Click **Add SSH Key**
+4. Paste your public key and give it a name
+5. Click **Add SSH Key**
 
-### 4️⃣ Get Your Telegram User ID
+#### 3.2: Create API Token (You'll use this later in Telegram)
 
-Message [@userinfobot](https://t.me/userinfobot) on Telegram and copy your numeric user ID.
+1. In DigitalOcean Console, go to **API** → **Tokens/Keys**
+2. Click **Generate New Token**
+3. Name it (e.g., "Telegram Bot")
+4. Select **Read** and **Write** scopes
+5. Click **Generate Token**
+6. **Copy and save the token immediately** (it's only shown once)
 
-### 5️⃣ Deploy to Cloudflare Workers
+### Step 4: Clone and Setup Project
 
 ```bash
 # Clone the repository
@@ -96,33 +100,67 @@ cd DigitalOcean-Bot
 
 # Install dependencies
 npm install
+```
 
-# Login to Cloudflare
+### Step 5: Configure Cloudflare
+
+#### 5.1: Login to Cloudflare
+
+```bash
 npx wrangler login
+```
 
-# Create KV namespace
+This will open a browser window. Click **Allow** to authorize Wrangler.
+
+#### 5.2: Create KV Namespace
+
+```bash
 npx wrangler kv namespace create "DROPLET_CREATION"
-# Copy the ID from output and paste into wrangler.jsonc
+```
 
-# Add secrets
+You'll see output like:
+```
+{ binding = "DROPLET_CREATION", id = "abc123xyz456..." }
+```
+
+**Important:** Open `wrangler.jsonc` and verify the KV namespace ID on line 12 matches the `id` from the output above. If different, update it.
+
+#### 5.3: Set Secrets
+
+You need to configure two secrets:
+
+```bash
+# Set Telegram Bot Token
 npx wrangler secret put TELEGRAM_BOT_TOKEN
-# Paste your Telegram bot token
+# When prompted, paste your Telegram bot token and press Enter
 
-npx wrangler secret put DO_API_TOKEN
-# Paste your DigitalOcean API token
-
+# Set Allowed User IDs
 npx wrangler secret put ALLOWED_USER_IDS
-# Enter your Telegram User ID (comma-separated for multiple: 123456,789012)
+# When prompted, enter your Telegram User ID (e.g., 123456789) and press Enter
+# For multiple users, separate with commas: 123456789,987654321
+```
 
-# Deploy
+**Note:** Unlike traditional bots, each user will set their own DigitalOcean API token directly through the bot using the `/setapi` command. You don't need to configure it as a secret.
+
+### Step 6: Deploy
+
+```bash
 npx wrangler deploy
 ```
 
-### 6️⃣ Register Webhook
-
-After deployment, visit:
+After successful deployment, you'll see output like:
 ```
-https://your-worker-url.workers.dev/registerWebhook
+Published telegram-do-bot (X.XX sec)
+  https://telegram-do-bot.your-username.workers.dev
+```
+
+**Copy this URL** - you'll need it in the next step.
+
+### Step 7: Register Webhook
+
+Open your browser and navigate to:
+```
+https://telegram-do-bot.your-username.workers.dev/registerWebhook
 ```
 
 You should see:
@@ -134,116 +172,216 @@ You should see:
 }
 ```
 
-### 7️⃣ Test Your Bot
+If you see this, your webhook is successfully registered! 🎉
 
-Open Telegram, find your bot, and send `/start` 🎉
+### Step 8: Start Using the Bot
+
+1. Open Telegram
+2. Search for your bot (the username you created in Step 1)
+3. Send `/start`
+4. You'll see a welcome message asking you to configure your API token
+5. Send `/setapi`
+6. Reply to the bot's message with your DigitalOcean API token (from Step 3.2)
+7. The bot will validate and save your token
+8. Now you can use `/droplets` and `/create` commands!
+
+## 📝 Bot Commands
+
+| Command | Description |
+|---------|-------------|
+| `/start` | Show welcome message and available commands |
+| `/setapi` | Configure or change your DigitalOcean API token |
+| `/droplets` | List all your droplets with interactive buttons |
+| `/create` | Start the interactive droplet creation wizard |
+
+## 🔄 Development Workflow
+
+### Local Development
+
+```bash
+# Run the bot locally (for testing)
+npx wrangler dev
+```
+
+**Note:** For local testing with Telegram webhooks, you'll need to:
+1. Use `npx wrangler dev --remote` to get a public URL, or
+2. Use a tunneling service like [ngrok](https://ngrok.com/) to expose your local server
+
+### Testing
+
+```bash
+# Run tests
+npm test
+```
+
+### Viewing Logs
+
+```bash
+# Stream real-time logs
+npx wrangler tail
+
+# View logs with filtering
+npx wrangler tail --status error
+```
+
+### Updating Secrets
+
+```bash
+# Update Telegram Bot Token
+npx wrangler secret put TELEGRAM_BOT_TOKEN
+
+# Update Allowed User IDs
+npx wrangler secret put ALLOWED_USER_IDS
+
+# List all secrets (doesn't show values)
+npx wrangler secret list
+
+# Delete a secret
+npx wrangler secret delete SECRET_NAME
+```
+
+### Deploying Updates
+
+```bash
+# After making code changes
+git add .
+git commit -m "Your commit message"
+git push origin main
+
+# Deploy to Cloudflare
+npx wrangler deploy
+```
 
 ## 🛠️ Configuration
 
-### Environment Variables (Secrets)
+### Required Secrets
 
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `TELEGRAM_BOT_TOKEN` | Your Telegram bot token from @BotFather | ✅ Yes |
-| `DO_API_TOKEN` | DigitalOcean API token with Read & Write access | ✅ Yes |
-| `ALLOWED_USER_IDS` | Comma-separated Telegram user IDs (e.g., `123456,789012`) | ✅ Yes |
+| Secret | Description | Example |
+|--------|-------------|---------|
+| `TELEGRAM_BOT_TOKEN` | Bot token from @BotFather | `1234567890:ABCdef...` |
+| `ALLOWED_USER_IDS` | Comma-separated Telegram user IDs | `123456789` or `123,456,789` |
 
 ### KV Namespace
 
 | Binding | Purpose |
 |---------|---------|
-| `DROPLET_CREATION` | Temporary storage for multi-step droplet creation flow |
+| `DROPLET_CREATION` | Stores user API tokens and temporary session data |
+
+### Per-User Configuration
+
+Each user must configure their own DigitalOcean API token using the `/setapi` command in Telegram. This approach:
+- Allows multiple users with different DigitalOcean accounts
+- Keeps credentials isolated per user
+- Stores tokens securely in Cloudflare KV
+- Validates tokens before saving
 
 ## 📁 Project Structure
 
 ```
 DigitalOcean-Bot/
 ├── src/
-│   └── index.js          # Main bot logic
+│   └── index.js          # Main bot logic and webhook handler
 ├── test/
-│   └── index.spec.js     # Tests
+│   └── index.spec.js     # Unit tests
 ├── .editorconfig         # Editor configuration
-├── .gitignore           # Git ignore rules
-├── .prettierrc          # Code formatter config
-├── package.json         # Dependencies
-├── vitest.config.js     # Test configuration
-├── wrangler.jsonc       # Cloudflare Workers config
-└── README.md            # This file
+├── .gitignore            # Git ignore rules
+├── .prettierrc           # Code formatter settings
+├── package.json          # Project dependencies
+├── vitest.config.js      # Test configuration
+├── wrangler.jsonc        # Cloudflare Workers configuration
+└── README.md             # This file
 ```
-
-## 🔧 Development
-
-```bash
-# Install dependencies
-npm install
-
-# Run locally
-npx wrangler dev
-
-# Run tests
-npm test
-
-# Deploy to production
-npx wrangler deploy
-
-# View logs
-npx wrangler tail
-```
-
-## 📝 Commands Reference
-
-### Bot Commands
-
-| Command | Description |
-|---------|-------------|
-| `/start` | Show welcome message and available commands |
-| `/droplets` | List all your droplets with inline buttons |
-| `/create` | Start interactive droplet creation wizard |
-
-### Interactive Features
-
-- **View Details** - Click any droplet to see full information
-- **Rebuild** - Select new OS and rebuild (preserves IP)
-- **Delete** - Remove droplet with confirmation
-- **Back Navigation** - Navigate through menus easily
-
-## 🔒 Security Best Practices
-
-1. **Never commit secrets** - Use Wrangler secrets, not environment variables
-2. **Whitelist users** - Only authorized Telegram IDs can use the bot
-3. **SSH keys only** - No password authentication for droplets
-4. **Regular updates** - Keep dependencies and Wrangler up to date
-5. **Monitor logs** - Use `wrangler tail` to watch for suspicious activity
 
 ## 🐛 Troubleshooting
 
-### Bot doesn't respond
-- Check webhook registration: visit `/registerWebhook` endpoint
-- Verify secrets are set correctly: `wrangler secret list`
-- Check logs: `wrangler tail`
+### Bot doesn't respond to messages
+
+**Solution:**
+1. Verify webhook registration: Visit `https://your-worker.workers.dev/registerWebhook`
+2. Check secrets are configured: `npx wrangler secret list`
+3. View logs for errors: `npx wrangler tail`
 
 ### "Access denied" message
-- Verify your Telegram User ID is in `ALLOWED_USER_IDS`
-- Multiple users need comma separation: `123,456,789`
+
+**Cause:** Your Telegram User ID is not in the allowed list.
+
+**Solution:**
+1. Get your User ID from [@userinfobot](https://t.me/userinfobot)
+2. Update the secret: `npx wrangler secret put ALLOWED_USER_IDS`
+3. Enter your User ID (for multiple users: `123,456,789`)
+
+### "No API token found" message
+
+**Cause:** You haven't configured your DigitalOcean API token yet.
+
+**Solution:**
+1. Send `/setapi` to the bot
+2. Reply with your DigitalOcean API token
+3. Wait for confirmation
+
+### "Invalid API token" error
+
+**Cause:** The DigitalOcean API token is invalid or has insufficient permissions.
+
+**Solution:**
+1. Verify your token in [DigitalOcean Console](https://cloud.digitalocean.com/)
+2. Ensure it has both **Read** and **Write** permissions
+3. Generate a new token if needed
+4. Use `/setapi` to configure the new token
 
 ### "No SSH Keys Found" error
-- Add at least one SSH key to DigitalOcean account
-- Go to: Settings → Security → SSH Keys
+
+**Cause:** Your DigitalOcean account has no SSH keys added.
+
+**Solution:**
+1. Follow [Step 3.1](#31-add-ssh-key-required) to add an SSH key
+2. Try creating a droplet again
 
 ### Droplet creation fails
-- Verify DO_API_TOKEN has Read & Write permissions
-- Check if selected region/size is available
-- Ensure you have billing set up on DigitalOcean
+
+**Common causes:**
+- Invalid API token permissions
+- Selected region/size unavailable
+- No billing method configured in DigitalOcean
+- SSH key missing
+
+**Solution:**
+1. Check API token has Read & Write access
+2. Try a different region or size
+3. Ensure billing is set up in DigitalOcean
+4. Verify at least one SSH key exists
+5. Check logs: `npx wrangler tail`
+
+### KV namespace binding error
+
+**Error:** `KV namespace DROPLET_CREATION not found`
+
+**Solution:**
+1. Verify `wrangler.jsonc` has the correct KV namespace ID
+2. Run: `npx wrangler kv namespace list`
+3. Update the `id` field in `wrangler.jsonc` if needed
+4. Redeploy: `npx wrangler deploy`
+
+## 🔒 Security Best Practices
+
+1. **Never commit secrets to Git** - Always use `wrangler secret put`
+2. **Limit user access** - Only add trusted Telegram User IDs to `ALLOWED_USER_IDS`
+3. **Use SSH keys only** - Droplets are created without password authentication
+4. **Rotate API tokens periodically** - Use `/setapi` to update your token
+5. **Monitor bot activity** - Regularly check logs with `wrangler tail`
+6. **Keep dependencies updated** - Run `npm update` and redeploy regularly
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Contributions are welcome! Here's how to contribute:
 
 1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+2. Create a feature branch: `git checkout -b feature/amazing-feature`
+3. Make your changes
+4. Test thoroughly: `npm test`
+5. Commit your changes: `git commit -m 'Add amazing feature'`
+6. Push to your fork: `git push origin feature/amazing-feature`
+7. Open a Pull Request
 
 ## 📄 License
 
@@ -252,7 +390,7 @@ This project is open source and available under the [MIT License](LICENSE).
 ## 🙏 Acknowledgments
 
 - [Cloudflare Workers](https://workers.cloudflare.com/) - Serverless platform
-- [DigitalOcean](https://www.digitalocean.com/) - Cloud infrastructure
+- [DigitalOcean API](https://docs.digitalocean.com/reference/api/) - Cloud infrastructure API
 - [Telegram Bot API](https://core.telegram.org/bots/api) - Bot framework
 
 ## 📞 Support
