@@ -102,6 +102,62 @@ cd DigitalOcean-Bot
 npm install
 ```
 
+#### 4.1: Customize Worker Configuration (Optional)
+
+Open `wrangler.jsonc` and customize these settings:
+
+**1. Change Worker Name (Subdomain):**
+
+The worker name determines your bot's URL. By default it's `telegram-do-bot`.
+
+```json
+{
+  "name": "telegram-do-bot",  // Change this to your desired name
+  ...
+}
+```
+
+For example, change to:
+```json
+{
+  "name": "my-awesome-bot",
+  ...
+}
+```
+
+This will make your URL:
+```
+https://my-awesome-bot.your-subdomain.workers.dev
+```
+
+**Note:** Worker names can only contain lowercase letters, numbers, and hyphens.
+
+**2. Clear KV Namespace ID:**
+
+The KV namespace ID in the repository is from the original developer's account. You need to clear it and add your own.
+
+Find this section in `wrangler.jsonc`:
+```json
+"kv_namespaces": [
+    {
+        "binding": "DROPLET_CREATION",
+        "id": "cedc1d65555547d4aae2d44acfb256f2"  // ← Clear this
+    }
+]
+```
+
+Change it to:
+```json
+"kv_namespaces": [
+    {
+        "binding": "DROPLET_CREATION",
+        "id": ""  // ← Empty for now
+    }
+]
+```
+
+You'll fill in your own ID in the next step.
+
 ### Step 5: Configure Cloudflare
 
 #### 5.1: Login to Cloudflare
@@ -120,10 +176,23 @@ npx wrangler kv namespace create "DROPLET_CREATION"
 
 You'll see output like:
 ```
+🎉 Successfully created KV namespace.
+Add the following to your configuration file in your kv_namespaces array:
 { binding = "DROPLET_CREATION", id = "abc123xyz456..." }
 ```
 
-**Important:** Open `wrangler.jsonc` and verify the KV namespace ID on line 12 matches the `id` from the output above. If different, update it.
+**Copy the ID** (e.g., `abc123xyz456...`) and update `wrangler.jsonc`:
+
+```json
+"kv_namespaces": [
+    {
+        "binding": "DROPLET_CREATION",
+        "id": "abc123xyz456..."  // ← Paste your ID here
+    }
+]
+```
+
+Save the file.
 
 #### 5.3: Set Secrets
 
@@ -150,8 +219,8 @@ npx wrangler deploy
 
 After successful deployment, you'll see output like:
 ```
-Published telegram-do-bot (X.XX sec)
-  https://telegram-do-bot.your-username.workers.dev
+Published my-awesome-bot (X.XX sec)
+  https://my-awesome-bot.your-username.workers.dev
 ```
 
 **Copy this URL** - you'll need it in the next step.
@@ -160,8 +229,10 @@ Published telegram-do-bot (X.XX sec)
 
 Open your browser and navigate to:
 ```
-https://telegram-do-bot.your-username.workers.dev/registerWebhook
+https://your-worker-name.your-username.workers.dev/registerWebhook
 ```
+
+Replace `your-worker-name` with the name you chose in Step 4.1.
 
 You should see:
 ```json
@@ -267,6 +338,13 @@ npx wrangler deploy
 |---------|---------|
 | `DROPLET_CREATION` | Stores user API tokens and temporary session data |
 
+### Customizable Settings (wrangler.jsonc)
+
+| Setting | Description | Example |
+|---------|-------------|---------||
+| `name` | Worker name (determines your bot's subdomain) | `my-do-bot` |
+| `kv_namespaces[].id` | Your KV namespace ID (from `wrangler kv namespace create`) | `abc123xyz456...` |
+
 ### Per-User Configuration
 
 Each user must configure their own DigitalOcean API token using the `/setapi` command in Telegram. This approach:
@@ -357,10 +435,20 @@ DigitalOcean-Bot/
 **Error:** `KV namespace DROPLET_CREATION not found`
 
 **Solution:**
-1. Verify `wrangler.jsonc` has the correct KV namespace ID
-2. Run: `npx wrangler kv namespace list`
-3. Update the `id` field in `wrangler.jsonc` if needed
-4. Redeploy: `npx wrangler deploy`
+1. Verify you created your own KV namespace: `npx wrangler kv namespace create "DROPLET_CREATION"`
+2. Make sure you updated the `id` field in `wrangler.jsonc` with YOUR namespace ID (not the one from the repository)
+3. Run: `npx wrangler kv namespace list` to see all your namespaces
+4. Update the `id` field in `wrangler.jsonc` if needed
+5. Redeploy: `npx wrangler deploy`
+
+### Worker name already exists
+
+**Error:** `A worker with this name already exists`
+
+**Solution:**
+1. Open `wrangler.jsonc`
+2. Change the `name` field to something unique (e.g., `my-do-bot-v2`)
+3. Try deploying again: `npx wrangler deploy`
 
 ## 🔒 Security Best Practices
 
@@ -370,6 +458,7 @@ DigitalOcean-Bot/
 4. **Rotate API tokens periodically** - Use `/setapi` to update your token
 5. **Monitor bot activity** - Regularly check logs with `wrangler tail`
 6. **Keep dependencies updated** - Run `npm update` and redeploy regularly
+7. **Use unique worker names** - Customize the worker name to avoid conflicts
 
 ## 🤝 Contributing
 
