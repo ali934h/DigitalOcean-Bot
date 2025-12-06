@@ -1,19 +1,18 @@
 /**
- * DigitalOcean Telegram Bot - Complete Version with 1-Click Apps Support
+ * DigitalOcean Telegram Bot - Optimized Flow Version
+ * 
+ * NEW FLOW:
+ * /create → Region → OS/App → Size (filtered)
+ * 
+ * Rebuild: Shows OS/Apps compatible with current droplet size
  * 
  * Features:
  * - /start: Welcome message
  * - /setapi: Configure DigitalOcean API token
  * - /droplets: List and manage droplets
- * - /create: Create droplets with OS or 1-Click Apps
- *   - Choose between Operating Systems or 1-Click Apps
- *   - For Apps: Search or browse Popular Apps
- *   - Dynamic popular apps from config.js
- *   - Full droplet creation flow with size filtering
- * - Rebuild and delete droplets
+ * - /create: Region-first creation flow
+ * - Rebuild: Smart filtering based on droplet specs
  * - SSH key management
- * 
- * FIX: Now filters droplet sizes based on image min_disk_size requirements
  */
 
 import { POPULAR_APP_KEYWORDS, APP_DISPLAY_NAMES } from './config.js';
@@ -64,32 +63,28 @@ async function doApiCall(endpoint, method, apiToken, body = null) {
 // Get image details including min_disk_size
 async function getImageDetails(imageSlug, apiToken, env) {
 	try {
-		// Try cache first
 		const cached = await env.DROPLET_CREATION.get(`image_${imageSlug}`);
 		if (cached) return JSON.parse(cached);
 
-		// Check if it's a 1-Click app
 		const apps = await getMarketplaceApps(env, apiToken);
 		const app = apps.find(a => a.slug === imageSlug);
 		
 		if (app) {
-			// It's a 1-Click app - get the image details
 			const imageData = await doApiCall(`/images/${app.slug}`, 'GET', apiToken);
 			const details = {
 				slug: app.slug,
-				min_disk_size: imageData.image?.min_disk_size || 25, // Default 25GB for apps
-				min_memory: 1024, // Most apps need at least 1GB RAM
+				min_disk_size: imageData.image?.min_disk_size || 25,
+				min_memory: 1024,
 				type: 'app'
 			};
 			await env.DROPLET_CREATION.put(`image_${imageSlug}`, JSON.stringify(details), { expirationTtl: 3600 });
 			return details;
 		} else {
-			// It's a regular OS image
 			const imageData = await doApiCall(`/images/${imageSlug}`, 'GET', apiToken);
 			const details = {
 				slug: imageSlug,
 				min_disk_size: imageData.image?.min_disk_size || 10,
-				min_memory: 512, // OS images can work with 512MB
+				min_memory: 512,
 				type: 'os'
 			};
 			await env.DROPLET_CREATION.put(`image_${imageSlug}`, JSON.stringify(details), { expirationTtl: 3600 });
@@ -97,13 +92,7 @@ async function getImageDetails(imageSlug, apiToken, env) {
 		}
 	} catch (error) {
 		console.error('Error getting image details:', error);
-		// Return safe defaults
-		return {
-			slug: imageSlug,
-			min_disk_size: 25,
-			min_memory: 1024,
-			type: 'unknown'
-		};
+		return { slug: imageSlug, min_disk_size: 25, min_memory: 1024, type: 'unknown' };
 	}
 }
 
@@ -214,14 +203,12 @@ async function handleMessage(message, env) {
 	const userId = message.from.id;
 	const text = message.text;
 
-	// Check authorization
 	const allowedUsers = env.ALLOWED_USER_IDS.split(',').map(id => parseInt(id.trim()));
 	if (!allowedUsers.includes(userId)) {
 		await sendMessage(chatId, '⛔ Access denied. You are not authorized to use this bot.', env);
 		return;
 	}
 
-	// Handle API token reply
 	if (message.reply_to_message?.text?.includes('Please reply to this message with your') && 
 	    message.reply_to_message?.text?.includes('DigitalOcean API token')) {
 		await deleteMessage(chatId, message.reply_to_message.message_id, env);
@@ -239,7 +226,6 @@ async function handleMessage(message, env) {
 		return;
 	}
 
-	// Handle droplet name reply
 	if (message.reply_to_message?.text?.includes('Default name:')) {
 		const lines = message.reply_to_message.text.split('\n');
 		const region = lines.find(l => l.startsWith('Region:'))?.split(':')[1].trim();
@@ -250,14 +236,12 @@ async function handleMessage(message, env) {
 		return;
 	}
 
-	// Handle search query
 	const state = await getState(chatId, env);
 	if (state?.step === 'searching_app') {
-		await handleAppSearch(chatId, text, env);
+		await handleAppSearch(chatId, text, state.region, env);
 		return;
 	}
 
-	// Commands
 	if (text === '/start') {
 		const hasApiToken = await getUserApiToken(chatId, env);
 		const welcomeMsg = hasApiToken
@@ -273,7 +257,7 @@ async function handleMessage(message, env) {
 	} else if (text === '/droplets') {
 		await listDroplets(chatId, env);
 	} else if (text === '/create') {
-		await showImageTypeSelection(chatId, env);
+		await showRegions(chatId, env);
 	}
 }
 
@@ -288,54 +272,58 @@ async function handleCallbackQuery(callbackQuery, env) {
 		body: JSON.stringify({ callback_query_id: callbackQuery.id }),
 	});
 
-	// Image type selection
-	if (data === 'image_type:os') {
-		await editMessage(chatId, messageId, '⏳ Loading OS images...', env);
+	// Region selection (STEP 1)
+	if (data.startsWith('region_')) {
+		const region = data.replace('region_', '');
+		await setState(chatId, { region: region }, env);
 		await deleteMessage(chatId, messageId, env);
-		await showOSImages(chatId, env);
-	} else if (data === 'image_type:app') {
-		const keyboard = {
-			inline_keyboard: [
-				[{ text: '🔍 Search Apps', callback_data: 'app_menu:search' }],
-				[{ text: '⭐ Popular Apps', callback_data: 'app_menu:popular' }],
-				[{ text: '❌ Cancel', callback_data: 'cancel_create' }],
-			]
-		};
-		await editMessage(chatId, messageId, '📦 *1-Click Apps*\n\nChoose option:', env, keyboard);
+		await showImageTypeSelection(chatId, region, env);
+	}
+	// Image type selection (STEP 2)
+	else if (data.startsWith('imgtype_')) {
+		const parts = data.replace('imgtype_', '').split('_');
+		const region = parts[0];
+		const type = parts[1];
+		if (type === 'os') {
+			await deleteMessage(chatId, messageId, env);
+			await showOSImages(chatId, region, env);
+		} else if (type === 'app') {
+			const keyboard = {
+				inline_keyboard: [
+					[{ text: '🔍 Search Apps', callback_data: `appmenu_${region}_search` }],
+					[{ text: '⭐ Popular Apps', callback_data: `appmenu_${region}_popular` }],
+					[{ text: '◀️ Back', callback_data: 'back_to_regions' }],
+				]
+			};
+			await editMessage(chatId, messageId, '📦 *1-Click Apps*\n\nChoose option:', env, keyboard);
+		}
 	}
 	// App menu
-	else if (data === 'app_menu:search') {
-		await deleteMessage(chatId, messageId, env);
-		await sendMessage(chatId, '🔍 *Search Apps*\n\nType app name (e.g., wordpress, docker):', env);
-		await setState(chatId, { step: 'searching_app' }, env);
-	} else if (data === 'app_menu:popular') {
-		await showPopularApps(chatId, messageId, env);
+	else if (data.startsWith('appmenu_')) {
+		const parts = data.replace('appmenu_', '').split('_');
+		const region = parts[0];
+		const action = parts[1];
+		if (action === 'search') {
+			await deleteMessage(chatId, messageId, env);
+			await sendMessage(chatId, '🔍 *Search Apps*\n\nType app name:', env);
+			await setState(chatId, { step: 'searching_app', region: region }, env);
+		} else if (action === 'popular') {
+			await showPopularApps(chatId, messageId, region, env);
+		}
 	}
-	// App selection
-	else if (data.startsWith('select_app:')) {
-		const slug = data.replace('select_app:', '');
-		const displayName = APP_DISPLAY_NAMES[slug] || slug;
-		await editMessage(chatId, messageId, `✅ *App selected:* ${displayName}`, env);
-		await setState(chatId, { image: slug, imageType: 'app' }, env);
-		await showRegions(chatId, env);
-	}
-	// OS selection
-	else if (data.startsWith('select_os:')) {
-		const slug = data.replace('select_os:', '');
-		await editMessage(chatId, messageId, `✅ *OS selected:* ${slug}`, env);
-		await setState(chatId, { image: slug, imageType: 'os' }, env);
-		await showRegions(chatId, env);
-	}
-	// Region selection
-	else if (data.startsWith('region_')) {
-		const region = data.replace('region_', '');
+	// Image selection (OS or App)
+	else if (data.startsWith('selectimg_')) {
+		const parts = data.replace('selectimg_', '').split('_');
+		const region = parts[0];
+		const imageSlug = parts.slice(1).join('_');
 		const state = await getState(chatId, env);
 		state.region = region;
+		state.image = imageSlug;
 		await setState(chatId, state, env);
 		await deleteMessage(chatId, messageId, env);
-		await showSizes(chatId, region, state.image, state.imageType, env);
+		await showSizes(chatId, region, imageSlug, env);
 	}
-	// Size selection
+	// Size selection (STEP 3)
 	else if (data.startsWith('size_')) {
 		const parts = data.replace('size_', '').split('_');
 		const region = parts[0];
@@ -371,24 +359,38 @@ async function handleCallbackQuery(callbackQuery, env) {
 		await editMessageToDropletList(chatId, messageId, env);
 	} else if (data.startsWith('rebuild_')) {
 		const dropletId = data.replace('rebuild_', '');
-		await showRebuildOptions(chatId, messageId, dropletId, env);
-	} else if (data.startsWith('rbc_')) {
-		const sessionId = data.replace('rbc_', '');
-		await confirmRebuild(chatId, messageId, sessionId, env);
-	} else if (data.startsWith('rbe_')) {
-		const sessionId = data;
+		await showRebuildImageTypeSelection(chatId, messageId, dropletId, env);
+	} else if (data.startsWith('rebuildtype_')) {
+		const parts = data.replace('rebuildtype_', '').split('_');
+		const dropletId = parts[0];
+		const type = parts[1];
+		if (type === 'os') {
+			await showRebuildOSImages(chatId, messageId, dropletId, env);
+		} else if (type === 'app') {
+			await showRebuildAppMenu(chatId, messageId, dropletId, env);
+		}
+	} else if (data.startsWith('rebuildappmenu_')) {
+		const parts = data.replace('rebuildappmenu_', '').split('_');
+		const dropletId = parts[0];
+		const action = parts[1];
+		if (action === 'popular') {
+			await showRebuildPopularApps(chatId, messageId, dropletId, env);
+		}
+	} else if (data.startsWith('rebuildimg_')) {
+		const parts = data.replace('rebuildimg_', '').split('_');
+		const dropletId = parts[0];
+		const imageSlug = parts.slice(1).join('_');
+		await confirmRebuild(chatId, messageId, dropletId, imageSlug, env);
+	} else if (data.startsWith('execute_rebuild_')) {
+		const sessionId = data.replace('execute_rebuild_', '');
 		await executeRebuild(chatId, messageId, sessionId, env);
 	}
-	// Cancel
+	// Cancel & Back
 	else if (data === 'cancel_create') {
 		await clearState(chatId, env);
 		await editMessage(chatId, messageId, '❌ Cancelled.', env);
 	} else if (data === 'back_to_regions') {
 		await showRegionsEdit(chatId, messageId, env);
-	} else if (data.startsWith('back_to_sizes_')) {
-		const region = data.replace('back_to_sizes_', '');
-		const state = await getState(chatId, env);
-		await showSizesEdit(chatId, messageId, region, state.image, state.imageType, env);
 	}
 }
 
@@ -396,7 +398,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 
 async function getState(chatId, env) {
 	const stateJson = await env.DROPLET_CREATION.get(`state_${chatId}`);
-	return stateJson ? JSON.parse(stateJson) : null;
+	return stateJson ? JSON.parse(stateJson) : {};
 }
 
 async function setState(chatId, state, env) {
@@ -407,81 +409,14 @@ async function clearState(chatId, env) {
 	await env.DROPLET_CREATION.delete(`state_${chatId}`);
 }
 
-// === IMAGE SELECTION ===
+// === REGION SELECTION (STEP 1) ===
 
-async function showImageTypeSelection(chatId, env) {
+async function showRegions(chatId, env) {
 	const apiToken = await getUserApiToken(chatId, env);
 	if (!apiToken) {
 		await sendMessage(chatId, '❌ No API token. Use /setapi first.', env);
 		return;
 	}
-	const keyboard = {
-		inline_keyboard: [
-			[{ text: '🐧 Operating Systems', callback_data: 'image_type:os' }],
-			[{ text: '📦 1-Click Apps', callback_data: 'image_type:app' }],
-		]
-	};
-	await sendMessage(chatId, '🚀 *Create New Droplet*\n\nChoose image type:', env, keyboard);
-}
-
-async function showOSImages(chatId, env) {
-	const apiToken = await getUserApiToken(chatId, env);
-	const url = 'https://api.digitalocean.com/v2/images?type=distribution&per_page=100';
-	const response = await fetch(url, {
-		headers: { Authorization: `Bearer ${apiToken}`, 'Content-Type': 'application/json' },
-	});
-	const data = await response.json();
-	const popularImages = data.images
-		.filter(img => img.status === 'available' && 
-			(img.slug?.includes('ubuntu') || img.slug?.includes('debian') || 
-			 img.slug?.includes('centos') || img.slug?.includes('fedora') || 
-			 img.slug?.includes('rocky')))
-		.slice(0, 10);
-	const keyboard = popularImages.map(image => [{
-		text: image.name,
-		callback_data: `select_os:${image.slug || image.id}`
-	}]);
-	keyboard.push([{ text: '❌ Cancel', callback_data: 'cancel_create' }]);
-	await sendMessage(chatId, '🐧 *Select Operating System:*', env, { inline_keyboard: keyboard });
-}
-
-async function showPopularApps(chatId, messageId, env) {
-	const apiToken = await getUserApiToken(chatId, env);
-	const popularApps = await getPopularApps(env, apiToken);
-	if (popularApps.length === 0) {
-		await editMessage(chatId, messageId, '❌ No popular apps found.', env);
-		return;
-	}
-	const keyboard = popularApps.map(app => [{
-		text: app.name,
-		callback_data: `select_app:${app.slug}`
-	}]);
-	keyboard.push([{ text: '🔍 Search Instead', callback_data: 'app_menu:search' }]);
-	keyboard.push([{ text: '❌ Cancel', callback_data: 'cancel_create' }]);
-	await editMessage(chatId, messageId, '⭐ *Popular Apps:*', env, { inline_keyboard: keyboard });
-}
-
-async function handleAppSearch(chatId, query, env) {
-	const apiToken = await getUserApiToken(chatId, env);
-	const apps = await getMarketplaceApps(env, apiToken);
-	const term = query.toLowerCase();
-	const results = apps.filter(app => app.slug.toLowerCase().includes(term));
-	if (results.length === 0) {
-		await sendMessage(chatId, '❌ No apps found. Try again:', env);
-		return;
-	}
-	const keyboard = results.slice(0, 15).map(app => [{
-		text: APP_DISPLAY_NAMES[app.slug] || app.slug,
-		callback_data: `select_app:${app.slug}`
-	}]);
-	await sendMessage(chatId, `📦 Found ${results.length} app(s):`, env, { inline_keyboard: keyboard });
-	await clearState(chatId, env);
-}
-
-// === REGION & SIZE ===
-
-async function showRegions(chatId, env) {
-	const apiToken = await getUserApiToken(chatId, env);
 	const data = await doApiCall('/regions', 'GET', apiToken);
 	const availableRegions = data.regions.filter(region => region.available);
 	const keyboard = [];
@@ -493,8 +428,7 @@ async function showRegions(chatId, env) {
 		}
 		keyboard.push(row);
 	}
-	keyboard.push([{ text: '❌ Cancel', callback_data: 'cancel_create' }]);
-	await sendMessage(chatId, '🌍 *Select a region:*', env, { inline_keyboard: keyboard });
+	await sendMessage(chatId, '🚀 *Create New Droplet*\n\n🌍 Step 1: Select region', env, { inline_keyboard: keyboard });
 }
 
 async function showRegionsEdit(chatId, messageId, env) {
@@ -510,40 +444,93 @@ async function showRegionsEdit(chatId, messageId, env) {
 		}
 		keyboard.push(row);
 	}
-	keyboard.push([{ text: '❌ Cancel', callback_data: 'cancel_create' }]);
-	await editMessage(chatId, messageId, '🌍 *Select a region:*', env, { inline_keyboard: keyboard });
+	await editMessage(chatId, messageId, '🌍 *Select region:*', env, { inline_keyboard: keyboard });
 }
 
-async function showSizes(chatId, region, imageSlug, imageType, env) {
+// === IMAGE TYPE SELECTION (STEP 2) ===
+
+async function showImageTypeSelection(chatId, region, env) {
+	const keyboard = {
+		inline_keyboard: [
+			[{ text: '🐧 Operating Systems', callback_data: `imgtype_${region}_os` }],
+			[{ text: '📦 1-Click Apps', callback_data: `imgtype_${region}_app` }],
+			[{ text: '◀️ Back to Regions', callback_data: 'back_to_regions' }],
+		]
+	};
+	await sendMessage(chatId, `✅ Region: *${region}*\n\n🖥️ Step 2: Choose image type`, env, keyboard);
+}
+
+async function showOSImages(chatId, region, env) {
 	const apiToken = await getUserApiToken(chatId, env);
-	
-	// Get image requirements
+	const url = 'https://api.digitalocean.com/v2/images?type=distribution&per_page=100';
+	const response = await fetch(url, {
+		headers: { Authorization: `Bearer ${apiToken}`, 'Content-Type': 'application/json' },
+	});
+	const data = await response.json();
+	const popularImages = data.images
+		.filter(img => img.status === 'available' && 
+			(img.slug?.includes('ubuntu') || img.slug?.includes('debian') || 
+			 img.slug?.includes('centos') || img.slug?.includes('fedora') || 
+			 img.slug?.includes('rocky')))
+		.slice(0, 10);
+	const keyboard = popularImages.map(image => [{
+		text: image.name,
+		callback_data: `selectimg_${region}_${image.slug || image.id}`
+	}]);
+	keyboard.push([{ text: '◀️ Back', callback_data: 'back_to_regions' }]);
+	await sendMessage(chatId, '🐧 *Select Operating System:*', env, { inline_keyboard: keyboard });
+}
+
+async function showPopularApps(chatId, messageId, region, env) {
+	const apiToken = await getUserApiToken(chatId, env);
+	const popularApps = await getPopularApps(env, apiToken);
+	if (popularApps.length === 0) {
+		await editMessage(chatId, messageId, '❌ No popular apps found.', env);
+		return;
+	}
+	const keyboard = popularApps.map(app => [{
+		text: app.name,
+		callback_data: `selectimg_${region}_${app.slug}`
+	}]);
+	keyboard.push([{ text: '🔍 Search Instead', callback_data: `appmenu_${region}_search` }]);
+	keyboard.push([{ text: '◀️ Back', callback_data: 'back_to_regions' }]);
+	await editMessage(chatId, messageId, '⭐ *Popular Apps:*', env, { inline_keyboard: keyboard });
+}
+
+async function handleAppSearch(chatId, query, region, env) {
+	const apiToken = await getUserApiToken(chatId, env);
+	const apps = await getMarketplaceApps(env, apiToken);
+	const term = query.toLowerCase();
+	const results = apps.filter(app => app.slug.toLowerCase().includes(term));
+	if (results.length === 0) {
+		await sendMessage(chatId, '❌ No apps found. Try again:', env);
+		return;
+	}
+	const keyboard = results.slice(0, 15).map(app => [{
+		text: APP_DISPLAY_NAMES[app.slug] || app.slug,
+		callback_data: `selectimg_${region}_${app.slug}`
+	}]);
+	await sendMessage(chatId, `📦 Found ${results.length} app(s):`, env, { inline_keyboard: keyboard });
+	await clearState(chatId, env);
+}
+
+// === SIZE SELECTION (STEP 3) ===
+
+async function showSizes(chatId, region, imageSlug, env) {
+	const apiToken = await getUserApiToken(chatId, env);
 	const imageDetails = await getImageDetails(imageSlug, apiToken, env);
-	
 	const data = await doApiCall('/sizes', 'GET', apiToken);
-	
-	// Filter sizes based on requirements
 	const availableSizes = data.sizes
 		.filter(size => {
-			// Must be available in selected region
 			if (!size.available || !size.regions.includes(region)) return false;
-			
-			// Check disk size requirement
 			if (size.disk < imageDetails.min_disk_size) return false;
-			
-			// Check memory requirement
 			if (size.memory < imageDetails.min_memory) return false;
-			
 			return true;
 		})
 		.sort((a, b) => a.price_monthly - b.price_monthly);
 	
 	if (availableSizes.length === 0) {
-		const warningText = `⚠️ *No compatible sizes found!*\n\n` +
-			`*${imageSlug}* requires:\n` +
-			`• Minimum ${imageDetails.min_disk_size}GB disk\n` +
-			`• Minimum ${Math.ceil(imageDetails.min_memory / 1024)}GB RAM\n\n` +
-			`Try another region or image.`;
+		const warningText = `⚠️ *No compatible sizes!*\n\n${imageSlug} requires:\n• Min ${imageDetails.min_disk_size}GB disk\n• Min ${Math.ceil(imageDetails.min_memory / 1024)}GB RAM`;
 		await sendMessage(chatId, warningText, env);
 		return;
 	}
@@ -552,52 +539,9 @@ async function showSizes(chatId, region, imageSlug, imageType, env) {
 		text: `${size.slug} - $${size.price_monthly}/mo (${Math.ceil(size.memory / 1024)}GB RAM, ${size.disk}GB)`,
 		callback_data: `size_${region}_${size.slug}`
 	}]);
-	
-	const infoText = imageType === 'app' 
-		? `💰 *Select a plan:*\n\n✅ Filtered for ${imageSlug} requirements` 
-		: `💰 *Select a plan:*`;
-	
 	keyboard.push([{ text: '◀️ Back', callback_data: 'back_to_regions' }]);
-	keyboard.push([{ text: '❌ Cancel', callback_data: 'cancel_create' }]);
+	const infoText = `✅ Image: *${imageSlug}*\n\n💰 Step 3: Select size`;
 	await sendMessage(chatId, infoText, env, { inline_keyboard: keyboard });
-}
-
-async function showSizesEdit(chatId, messageId, region, imageSlug, imageType, env) {
-	const apiToken = await getUserApiToken(chatId, env);
-	
-	// Get image requirements
-	const imageDetails = await getImageDetails(imageSlug, apiToken, env);
-	
-	const data = await doApiCall('/sizes', 'GET', apiToken);
-	
-	// Filter sizes based on requirements
-	const availableSizes = data.sizes
-		.filter(size => {
-			if (!size.available || !size.regions.includes(region)) return false;
-			if (size.disk < imageDetails.min_disk_size) return false;
-			if (size.memory < imageDetails.min_memory) return false;
-			return true;
-		})
-		.sort((a, b) => a.price_monthly - b.price_monthly);
-	
-	if (availableSizes.length === 0) {
-		const warningText = `⚠️ *No compatible sizes!*\n\nRequires ${imageDetails.min_disk_size}GB disk, ${Math.ceil(imageDetails.min_memory / 1024)}GB RAM`;
-		await editMessage(chatId, messageId, warningText, env);
-		return;
-	}
-	
-	const keyboard = availableSizes.map(size => [{
-		text: `${size.slug} - $${size.price_monthly}/mo (${Math.ceil(size.memory / 1024)}GB RAM, ${size.disk}GB)`,
-		callback_data: `size_${region}_${size.slug}`
-	}]);
-	
-	const infoText = imageType === 'app' 
-		? `💰 *Select a plan:*\n\n✅ Filtered for requirements` 
-		: `💰 *Select a plan:*`;
-	
-	keyboard.push([{ text: '◀️ Back', callback_data: 'back_to_regions' }]);
-	keyboard.push([{ text: '❌ Cancel', callback_data: 'cancel_create' }]);
-	await editMessage(chatId, messageId, infoText, env, { inline_keyboard: keyboard });
 }
 
 // === DROPLET NAME & CREATION ===
@@ -614,10 +558,10 @@ async function askDropletName(chatId, image, size, region, env) {
 	await env.DROPLET_CREATION.put(sessionId, JSON.stringify({
 		region, size, image, defaultName
 	}), { expirationTtl: 300 });
-	const text = `📝 *Droplet Name*\n\nRegion: ${region}\nSize: ${size}\nImage: ${image}\n\nDefault name: \`${defaultName}\`\n\nReply to this message to change the name.`;
+	const text = `📝 *Droplet Name*\n\nRegion: ${region}\nSize: ${size}\nImage: ${image}\n\nDefault: \`${defaultName}\`\n\nReply to change name.`;
 	const keyboard = {
 		inline_keyboard: [
-			[{ text: '✅ Use Default Name', callback_data: `use_default_name_${sessionId}` }],
+			[{ text: '✅ Use Default', callback_data: `use_default_name_${sessionId}` }],
 			[{ text: '❌ Cancel', callback_data: 'cancel_create' }],
 		]
 	};
@@ -627,7 +571,7 @@ async function askDropletName(chatId, image, size, region, env) {
 async function useDefaultNameAndConfirm(chatId, sessionId, env) {
 	const dataStr = await env.DROPLET_CREATION.get(sessionId);
 	if (!dataStr) {
-		await sendMessage(chatId, '❌ Session expired. Try /create again.', env);
+		await sendMessage(chatId, '❌ Session expired.', env);
 		return;
 	}
 	const data = JSON.parse(dataStr);
@@ -640,18 +584,18 @@ async function confirmDropletCreation(chatId, name, region, size, image, env) {
 	const keysData = await doApiCall('/account/keys', 'GET', apiToken);
 	const sshKeys = keysData.ssh_keys || [];
 	if (sshKeys.length === 0) {
-		await sendMessage(chatId, '❌ *No SSH Keys*\n\nAdd at least one SSH key to your DigitalOcean account first.', env);
+		await sendMessage(chatId, '❌ *No SSH Keys*\n\nAdd SSH key to DigitalOcean first.', env);
 		return;
 	}
 	const creationId = `create_${chatId}_${Date.now()}`;
 	await env.DROPLET_CREATION.put(creationId, JSON.stringify({
 		name, region, size, image, sshKeyIds: sshKeys.map(key => key.id)
 	}), { expirationTtl: 300 });
-	const sshKeysList = sshKeys.map(key => `• ${key.name}`).join('\n');
-	const text = `⚠️ *Confirm*\n\n*Name:* ${name}\n*Region:* ${region}\n*Size:* ${size}\n*Image:* ${image}\n\n*SSH Keys (${sshKeys.length}):*\n${sshKeysList}`;
+	const text = `⚠️ *Confirm*\n\n*Name:* ${name}\n*Region:* ${region}\n*Size:* ${size}\n*Image:* ${image}\n*SSH Keys:* ${sshKeys.length}`;
 	const keyboard = {
 		inline_keyboard: [
-			[{ text: '✅ Create', callback_data: `confirmcreate_${creationId}` }, { text: '❌ Cancel', callback_data: 'cancel_create' }],
+			[{ text: '✅ Create', callback_data: `confirmcreate_${creationId}` }],
+			[{ text: '❌ Cancel', callback_data: 'cancel_create' }],
 		]
 	};
 	await sendMessage(chatId, text, env, keyboard);
@@ -665,7 +609,7 @@ async function createDropletFromKV(chatId, messageId, creationId, env) {
 		return;
 	}
 	const data = JSON.parse(dataStr);
-	await editMessage(chatId, messageId, '⏳ Creating droplet...', env);
+	await editMessage(chatId, messageId, '⏳ Creating...', env);
 	const result = await doApiCall('/droplets', 'POST', apiToken, {
 		name: data.name,
 		region: data.region,
@@ -677,12 +621,12 @@ async function createDropletFromKV(chatId, messageId, creationId, env) {
 		monitoring: true,
 	});
 	if (result.droplet) {
-		const publicIPv4 = result.droplet.networks.v4.find(net => net.type === 'public')?.ip_address || 'Assigning...';
-		const successText = `✅ *Droplet Created!*\n\n*Name:* ${result.droplet.name}\n*IP:* \`${publicIPv4}\`\n\n*SSH:*\n\`ssh root@${publicIPv4}\`\n\nUse /droplets to manage.`;
+		const ip = result.droplet.networks.v4.find(net => net.type === 'public')?.ip_address || 'Assigning...';
+		const successText = `✅ *Created!*\n\n*Name:* ${result.droplet.name}\n*IP:* \`${ip}\`\n\nSSH: \`ssh root@${ip}\``;
 		await editMessage(chatId, messageId, successText, env);
 		await env.DROPLET_CREATION.delete(creationId);
 	} else {
-		await editMessage(chatId, messageId, `❌ Failed: ${result.message || 'Unknown error'}`, env);
+		await editMessage(chatId, messageId, `❌ Failed: ${result.message || 'Unknown'}`, env);
 	}
 }
 
@@ -710,12 +654,12 @@ async function showDropletDetails(chatId, messageId, dropletId, env) {
 	const apiToken = await getUserApiToken(chatId, env);
 	const data = await doApiCall(`/droplets/${dropletId}`, 'GET', apiToken);
 	if (!data.droplet) {
-		await editMessage(chatId, messageId, '❌ Droplet not found.', env);
+		await editMessage(chatId, messageId, '❌ Not found.', env);
 		return;
 	}
 	const droplet = data.droplet;
-	const publicIPv4 = droplet.networks.v4.find(net => net.type === 'public')?.ip_address || 'Not assigned';
-	const details = `📦 *Droplet*\n\n*Name:* ${droplet.name}\n*Status:* ${droplet.status}\n*Region:* ${droplet.region.name}\n*Size:* ${droplet.size_slug}\n*IP:* \`${publicIPv4}\`\n\n*SSH:*\n\`ssh root@${publicIPv4}\``;
+	const ip = droplet.networks.v4.find(net => net.type === 'public')?.ip_address || 'Not assigned';
+	const details = `📦 *Droplet*\n\n*Name:* ${droplet.name}\n*Status:* ${droplet.status}\n*Region:* ${droplet.region.name}\n*Size:* ${droplet.size_slug}\n*IP:* \`${ip}\`\n\nSSH: \`ssh root@${ip}\``;
 	const keyboard = {
 		inline_keyboard: [
 			[{ text: '🔄 Rebuild', callback_data: `rebuild_${dropletId}` }],
@@ -729,10 +673,11 @@ async function showDropletDetails(chatId, messageId, dropletId, env) {
 async function showDeleteConfirmation(chatId, messageId, dropletId, env) {
 	const keyboard = {
 		inline_keyboard: [
-			[{ text: '✅ Yes, Delete', callback_data: `delete_${dropletId}` }, { text: '❌ Cancel', callback_data: `droplet_${dropletId}` }],
+			[{ text: '✅ Yes, Delete', callback_data: `delete_${dropletId}` }],
+			[{ text: '❌ Cancel', callback_data: `droplet_${dropletId}` }],
 		]
 	};
-	await editMessage(chatId, messageId, '⚠️ Delete this droplet?\n\nCannot be undone!', env, keyboard);
+	await editMessage(chatId, messageId, '⚠️ Delete?\n\nCannot be undone!', env, keyboard);
 }
 
 async function deleteDroplet(chatId, messageId, dropletId, env) {
@@ -742,9 +687,9 @@ async function deleteDroplet(chatId, messageId, dropletId, env) {
 		headers: { Authorization: `Bearer ${apiToken}`, 'Content-Type': 'application/json' },
 	});
 	if (response.status === 204) {
-		await editMessage(chatId, messageId, '✅ Droplet deleted!', env);
+		await editMessage(chatId, messageId, '✅ Deleted!', env);
 	} else {
-		await editMessage(chatId, messageId, '❌ Failed to delete.', env);
+		await editMessage(chatId, messageId, '❌ Failed.', env);
 	}
 }
 
@@ -752,7 +697,7 @@ async function editMessageToDropletList(chatId, messageId, env) {
 	const apiToken = await getUserApiToken(chatId, env);
 	const data = await doApiCall('/droplets', 'GET', apiToken);
 	if (!data.droplets || data.droplets.length === 0) {
-		await editMessage(chatId, messageId, 'No droplets found.', env);
+		await editMessage(chatId, messageId, 'No droplets.', env);
 		return;
 	}
 	const keyboard = data.droplets.map(droplet => [{
@@ -762,46 +707,102 @@ async function editMessageToDropletList(chatId, messageId, env) {
 	await editMessage(chatId, messageId, 'Your Droplets:', env, { inline_keyboard: keyboard });
 }
 
-async function showRebuildOptions(chatId, messageId, dropletId, env) {
+// === REBUILD WITH APP SUPPORT ===
+
+async function showRebuildImageTypeSelection(chatId, messageId, dropletId, env) {
+	const keyboard = {
+		inline_keyboard: [
+			[{ text: '🐧 Operating Systems', callback_data: `rebuildtype_${dropletId}_os` }],
+			[{ text: '📦 1-Click Apps', callback_data: `rebuildtype_${dropletId}_app` }],
+			[{ text: '◀️ Back', callback_data: `droplet_${dropletId}` }],
+		]
+	};
+	await editMessage(chatId, messageId, '🔄 *Rebuild Droplet*\n\n⚠️ Region cannot be changed\n\nChoose image type:', env, keyboard);
+}
+
+async function showRebuildOSImages(chatId, messageId, dropletId, env) {
 	const apiToken = await getUserApiToken(chatId, env);
+	const dropletData = await doApiCall(`/droplets/${dropletId}`, 'GET', apiToken);
+	const droplet = dropletData.droplet;
+	const currentDisk = droplet.disk;
+	const currentMemory = droplet.memory;
+	
 	const url = 'https://api.digitalocean.com/v2/images?type=distribution&per_page=100';
 	const response = await fetch(url, {
 		headers: { Authorization: `Bearer ${apiToken}`, 'Content-Type': 'application/json' },
 	});
 	const data = await response.json();
-	const popularImages = data.images
-		.filter(img => img.status === 'available' && 
-			(img.slug?.includes('ubuntu') || img.slug?.includes('debian') || 
-			 img.slug?.includes('centos') || img.slug?.includes('fedora') || 
-			 img.slug?.includes('rocky')))
-		.slice(0, 10);
-	const keyboard = [];
-	for (let i = 0; i < popularImages.length; i++) {
-		const image = popularImages[i];
-		const imageSlug = image.slug || String(image.id);
-		const timestamp = Date.now().toString(36);
-		const random = Math.random().toString(36).substr(2, 3);
-		const sessionId = `rb${i}_${timestamp}_${random}`;
-		await env.DROPLET_CREATION.put(sessionId, JSON.stringify({ dropletId, imageSlug }), { expirationTtl: 300 });
-		keyboard.push([{ text: image.name, callback_data: `rbc_${sessionId}` }]);
-	}
-	keyboard.push([{ text: '◀️ Back', callback_data: `droplet_${dropletId}` }]);
-	await editMessage(chatId, messageId, '🔄 *Rebuild*\n\n⚠️ All data will be erased!', env, { inline_keyboard: keyboard });
-}
-
-async function confirmRebuild(chatId, messageId, sessionId, env) {
-	const dataStr = await env.DROPLET_CREATION.get(sessionId);
-	if (!dataStr) {
-		await editMessage(chatId, messageId, '❌ Session expired.', env);
+	const compatibleImages = data.images.filter(img => {
+		if (img.status !== 'available') return false;
+		if (!img.slug?.includes('ubuntu') && !img.slug?.includes('debian') && 
+		    !img.slug?.includes('centos') && !img.slug?.includes('fedora') && 
+		    !img.slug?.includes('rocky')) return false;
+		const minDisk = img.min_disk_size || 10;
+		if (minDisk > currentDisk) return false;
+		return true;
+	}).slice(0, 10);
+	
+	if (compatibleImages.length === 0) {
+		await editMessage(chatId, messageId, '❌ No compatible OS images for current droplet size.', env);
 		return;
 	}
-	const data = JSON.parse(dataStr);
-	const execSessionId = `rbe_${Date.now().toString(36)}_${Math.random().toString(36).substr(2, 3)}`;
-	await env.DROPLET_CREATION.put(execSessionId, JSON.stringify(data), { expirationTtl: 300 });
-	const text = `⚠️ *Confirm Rebuild*\n\nDroplet ID: ${data.dropletId}\nNew OS: ${data.imageSlug}\n\n*All data will be deleted!*`;
+	
+	const keyboard = compatibleImages.map(img => [{
+		text: img.name,
+		callback_data: `rebuildimg_${dropletId}_${img.slug || img.id}`
+	}]);
+	keyboard.push([{ text: '◀️ Back', callback_data: `rebuild_${dropletId}` }]);
+	await editMessage(chatId, messageId, `🐧 *Select OS*\n\n✅ Filtered for ${currentDisk}GB disk`, env, { inline_keyboard: keyboard });
+}
+
+async function showRebuildAppMenu(chatId, messageId, dropletId, env) {
 	const keyboard = {
 		inline_keyboard: [
-			[{ text: '✅ Yes, Rebuild', callback_data: execSessionId }, { text: '❌ Cancel', callback_data: `droplet_${data.dropletId}` }],
+			[{ text: '⭐ Popular Apps', callback_data: `rebuildappmenu_${dropletId}_popular` }],
+			[{ text: '◀️ Back', callback_data: `rebuild_${dropletId}` }],
+		]
+	};
+	await editMessage(chatId, messageId, '📦 *1-Click Apps*', env, keyboard);
+}
+
+async function showRebuildPopularApps(chatId, messageId, dropletId, env) {
+	const apiToken = await getUserApiToken(chatId, env);
+	const dropletData = await doApiCall(`/droplets/${dropletId}`, 'GET', apiToken);
+	const droplet = dropletData.droplet;
+	const currentDisk = droplet.disk;
+	const currentMemory = droplet.memory;
+	
+	const popularApps = await getPopularApps(env, apiToken);
+	const compatibleApps = [];
+	
+	for (const app of popularApps) {
+		const details = await getImageDetails(app.slug, apiToken, env);
+		if (details.min_disk_size <= currentDisk && details.min_memory <= currentMemory) {
+			compatibleApps.push(app);
+		}
+	}
+	
+	if (compatibleApps.length === 0) {
+		await editMessage(chatId, messageId, `❌ No compatible apps\n\nYour droplet:\n• ${currentDisk}GB disk\n• ${Math.ceil(currentMemory/1024)}GB RAM\n\nUpgrade droplet size for more apps.`, env);
+		return;
+	}
+	
+	const keyboard = compatibleApps.map(app => [{
+		text: app.name,
+		callback_data: `rebuildimg_${dropletId}_${app.slug}`
+	}]);
+	keyboard.push([{ text: '◀️ Back', callback_data: `rebuildappmenu_${dropletId}_back` }]);
+	await editMessage(chatId, messageId, `⭐ *Compatible Apps*\n\n✅ Filtered for ${currentDisk}GB / ${Math.ceil(currentMemory/1024)}GB`, env, { inline_keyboard: keyboard });
+}
+
+async function confirmRebuild(chatId, messageId, dropletId, imageSlug, env) {
+	const sessionId = `rebuild_${chatId}_${Date.now()}`;
+	await env.DROPLET_CREATION.put(sessionId, JSON.stringify({ dropletId, imageSlug }), { expirationTtl: 300 });
+	const text = `⚠️ *Confirm Rebuild*\n\nDroplet: ${dropletId}\nNew Image: ${imageSlug}\n\n*All data will be deleted!*`;
+	const keyboard = {
+		inline_keyboard: [
+			[{ text: '✅ Yes, Rebuild', callback_data: `execute_rebuild_${sessionId}` }],
+			[{ text: '❌ Cancel', callback_data: `droplet_${dropletId}` }],
 		]
 	};
 	await editMessage(chatId, messageId, text, env, keyboard);
@@ -819,7 +820,7 @@ async function executeRebuild(chatId, messageId, sessionId, env) {
 	const keysData = await doApiCall('/account/keys', 'GET', apiToken);
 	const sshKeys = keysData.ssh_keys || [];
 	if (sshKeys.length === 0) {
-		await editMessage(chatId, messageId, '❌ No SSH keys found.', env);
+		await editMessage(chatId, messageId, '❌ No SSH keys.', env);
 		return;
 	}
 	const result = await doApiCall(`/droplets/${data.dropletId}/actions`, 'POST', apiToken, {
@@ -828,9 +829,9 @@ async function executeRebuild(chatId, messageId, sessionId, env) {
 		ssh_keys: sshKeys.map(key => key.id),
 	});
 	if (result.action) {
-		await editMessage(chatId, messageId, `✅ *Rebuild Started!*\n\nStatus: ${result.action.status}\n\nUse /droplets to check.`, env);
+		await editMessage(chatId, messageId, `✅ *Rebuild Started!*\n\nStatus: ${result.action.status}`, env);
 		await env.DROPLET_CREATION.delete(sessionId);
 	} else {
-		await editMessage(chatId, messageId, `❌ Failed: ${result.message || 'Unknown error'}`, env);
+		await editMessage(chatId, messageId, `❌ Failed: ${result.message || 'Unknown'}`, env);
 	}
 }
