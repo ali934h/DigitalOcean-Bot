@@ -238,36 +238,45 @@ async function handleMessage(message, env) {
 		return;
 	}
 
-	if (message.reply_to_message?.text?.includes('Please reply to this message with your') && 
-	    message.reply_to_message?.text?.includes('DigitalOcean API token')) {
-		await deleteMessage(chatId, message.reply_to_message.message_id, env);
-		await deleteMessage(chatId, message.message_id, env);
-		const validatingMsg = await sendMessage(chatId, '⏳ Validating your API token...', env);
-		const isValid = await saveUserApiToken(chatId, text.trim(), env);
-		if (validatingMsg.result?.message_id) {
-			await deleteMessage(chatId, validatingMsg.result.message_id, env);
+	// Check for API token reply (improved detection)
+	if (message.reply_to_message) {
+		const replyText = message.reply_to_message.text || '';
+		
+		// Detect /setapi reply
+		if (replyText.includes('API Token') || replyText.includes('API token') || replyText.includes('DigitalOcean API token')) {
+			await deleteMessage(chatId, message.reply_to_message.message_id, env);
+			await deleteMessage(chatId, message.message_id, env);
+			const validatingMsg = await sendMessage(chatId, '⏳ Validating your API token...', env);
+			const isValid = await saveUserApiToken(chatId, text.trim(), env);
+			if (validatingMsg.result?.message_id) {
+				await deleteMessage(chatId, validatingMsg.result.message_id, env);
+			}
+			if (isValid) {
+				await sendMessage(chatId, '✅ API token saved successfully!\n\nYou can now use /droplets and /create commands.', env);
+			} else {
+				await sendMessage(chatId, '❌ Invalid API token!\n\nPlease check your token and try /setapi again.', env);
+			}
+			return;
 		}
-		if (isValid) {
-			await sendMessage(chatId, '✅ API token saved successfully!\n\nYou can now use /droplets and /create commands.', env);
-		} else {
-			await sendMessage(chatId, '❌ Invalid API token!\n\nPlease check and try /setapi again.', env);
+		
+		// Detect droplet name reply
+		if (replyText.includes('Default name:') || replyText.includes('Default:')) {
+			const lines = replyText.split('\n');
+			const region = lines.find(l => l.startsWith('Region:'))?.split(':')[1].trim();
+			const size = lines.find(l => l.startsWith('Size:'))?.split(':')[1].trim();
+			const image = lines.find(l => l.startsWith('Image:'))?.split(':')[1].trim();
+			await deleteMessage(chatId, message.reply_to_message.message_id, env);
+			await confirmDropletCreation(chatId, text, region, size, image, env);
+			return;
 		}
-		return;
-	}
-
-	if (message.reply_to_message?.text?.includes('Default name:') || message.reply_to_message?.text?.includes('Default:')) {
-		const lines = message.reply_to_message.text.split('\n');
-		const region = lines.find(l => l.startsWith('Region:'))?.split(':')[1].trim();
-		const size = lines.find(l => l.startsWith('Size:'))?.split(':')[1].trim();
-		const image = lines.find(l => l.startsWith('Image:'))?.split(':')[1].trim();
-		await deleteMessage(chatId, message.reply_to_message.message_id, env);
-		await confirmDropletCreation(chatId, text, region, size, image, env);
-		return;
 	}
 
 	const state = await getState(chatId, env);
 	if (state?.step === 'searching_app') {
 		await handleAppSearch(chatId, text, state.region, env);
+		return;
+	} else if (state?.step === 'rebuild_search_app') {
+		await handleRebuildAppSearch(chatId, text, state.dropletId, env);
 		return;
 	}
 
@@ -280,9 +289,10 @@ async function handleMessage(message, env) {
 	} else if (text === '/setapi') {
 		const hasExisting = await getUserApiToken(chatId, env);
 		const tokenText = hasExisting
-			? '🔑 *Change API Token*\n\n⚠️ This will clear all sessions.\n\nReply with your new DigitalOcean API token.'
-			: '🔑 *Setup API Token*\n\nReply with your DigitalOcean API token.\n\nGet it at: https://cloud.digitalocean.com/';
-		await sendMessage(chatId, tokenText, env);
+			? '🔑 *Change API Token*\n\n⚠️ This will clear all sessions.\n\nReply to this message with your new DigitalOcean API token.'
+			: '🔑 *Setup API Token*\n\nReply to this message with your DigitalOcean API token.\n\nGet it at: https://cloud.digitalocean.com/';
+		const keyboard = { force_reply: true, selective: true };
+		await sendMessage(chatId, tokenText, env, keyboard);
 	} else if (text === '/droplets') {
 		await listDroplets(chatId, env);
 	} else if (text === '/create') {
@@ -409,6 +419,10 @@ async function handleCallbackQuery(callbackQuery, env) {
 		const action = parts[1];
 		if (action === 'popular') {
 			await showRebuildPopularApps(chatId, messageId, dropletId, env);
+		} else if (action === 'search') {
+			await deleteMessage(chatId, messageId, env);
+			await sendMessage(chatId, '🔍 *Search Apps for Rebuild*\n\nType app name:', env);
+			await setState(chatId, { step: 'rebuild_search_app', dropletId: dropletId }, env);
 		}
 	} else if (data.startsWith('rebuildimg_')) {
 		const parts = data.replace('rebuildimg_', '').split('_');
@@ -797,11 +811,12 @@ async function showRebuildOSImages(chatId, messageId, dropletId, env) {
 async function showRebuildAppMenu(chatId, messageId, dropletId, env) {
 	const keyboard = {
 		inline_keyboard: [
+			[{ text: '🔍 Search Apps', callback_data: `rebuildappmenu_${dropletId}_search` }],
 			[{ text: '⭐ Popular Apps', callback_data: `rebuildappmenu_${dropletId}_popular` }],
 			[{ text: '◀️ Back', callback_data: `rebuild_${dropletId}` }],
 		]
 	};
-	await editMessage(chatId, messageId, '📦 *1-Click Apps*', env, keyboard);
+	await editMessage(chatId, messageId, '📦 *1-Click Apps*\n\nChoose option:', env, keyboard);
 }
 
 async function showRebuildPopularApps(chatId, messageId, dropletId, env) {
@@ -830,8 +845,47 @@ async function showRebuildPopularApps(chatId, messageId, dropletId, env) {
 		text: app.name,
 		callback_data: `rebuildimg_${dropletId}_${app.slug}`
 	}]);
-	keyboard.push([{ text: '◀️ Back', callback_data: `rebuildappmenu_${dropletId}_back` }]);
+	keyboard.push([{ text: '🔍 Search Instead', callback_data: `rebuildappmenu_${dropletId}_search` }]);
+	keyboard.push([{ text: '◀️ Back', callback_data: `rebuild_${dropletId}` }]);
 	await editMessage(chatId, messageId, `⭐ *Compatible Apps*\n\n✅ Filtered for ${currentDisk}GB / ${Math.ceil(currentMemory/1024)}GB`, env, { inline_keyboard: keyboard });
+}
+
+async function handleRebuildAppSearch(chatId, query, dropletId, env) {
+	const apiToken = await getUserApiToken(chatId, env);
+	const dropletData = await doApiCall(`/droplets/${dropletId}`, 'GET', apiToken);
+	const droplet = dropletData.droplet;
+	const currentDisk = droplet.disk;
+	const currentMemory = droplet.memory;
+	
+	const apps = await getMarketplaceApps(env, apiToken);
+	const term = query.toLowerCase();
+	const results = apps.filter(app => app.slug.toLowerCase().includes(term));
+	
+	if (results.length === 0) {
+		await sendMessage(chatId, '❌ No apps found. Try again:', env);
+		return;
+	}
+	
+	// Filter by droplet compatibility
+	const compatibleResults = [];
+	for (const app of results.slice(0, 20)) {
+		const details = await getImageDetails(app.slug, apiToken, env);
+		if (details.min_disk_size <= currentDisk && details.min_memory <= currentMemory) {
+			compatibleResults.push(app);
+		}
+	}
+	
+	if (compatibleResults.length === 0) {
+		await sendMessage(chatId, `❌ Found apps but none compatible with your droplet (${currentDisk}GB/${Math.ceil(currentMemory/1024)}GB)`, env);
+		return;
+	}
+	
+	const keyboard = compatibleResults.slice(0, 15).map(app => [{
+		text: APP_DISPLAY_NAMES[app.slug] || app.slug,
+		callback_data: `rebuildimg_${dropletId}_${app.slug}`
+	}]);
+	await sendMessage(chatId, `📦 Found ${compatibleResults.length} compatible app(s):`, env, { inline_keyboard: keyboard });
+	await clearState(chatId, env);
 }
 
 async function confirmRebuild(chatId, messageId, dropletId, imageSlug, env) {
