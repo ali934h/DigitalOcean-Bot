@@ -9,9 +9,11 @@
  *   - Choose between Operating Systems or 1-Click Apps
  *   - For Apps: Search or browse Popular Apps
  *   - Dynamic popular apps from config.js
- *   - Full droplet creation flow
+ *   - Full droplet creation flow with size filtering
  * - Rebuild and delete droplets
  * - SSH key management
+ * 
+ * FIX: Now filters droplet sizes based on image min_disk_size requirements
  */
 
 import { POPULAR_APP_KEYWORDS, APP_DISPLAY_NAMES } from './config.js';
@@ -57,6 +59,52 @@ async function doApiCall(endpoint, method, apiToken, body = null) {
 	if (body) options.body = JSON.stringify(body);
 	const response = await fetch(`https://api.digitalocean.com/v2${endpoint}`, options);
 	return await response.json();
+}
+
+// Get image details including min_disk_size
+async function getImageDetails(imageSlug, apiToken, env) {
+	try {
+		// Try cache first
+		const cached = await env.DROPLET_CREATION.get(`image_${imageSlug}`);
+		if (cached) return JSON.parse(cached);
+
+		// Check if it's a 1-Click app
+		const apps = await getMarketplaceApps(env, apiToken);
+		const app = apps.find(a => a.slug === imageSlug);
+		
+		if (app) {
+			// It's a 1-Click app - get the image details
+			const imageData = await doApiCall(`/images/${app.slug}`, 'GET', apiToken);
+			const details = {
+				slug: app.slug,
+				min_disk_size: imageData.image?.min_disk_size || 25, // Default 25GB for apps
+				min_memory: 1024, // Most apps need at least 1GB RAM
+				type: 'app'
+			};
+			await env.DROPLET_CREATION.put(`image_${imageSlug}`, JSON.stringify(details), { expirationTtl: 3600 });
+			return details;
+		} else {
+			// It's a regular OS image
+			const imageData = await doApiCall(`/images/${imageSlug}`, 'GET', apiToken);
+			const details = {
+				slug: imageSlug,
+				min_disk_size: imageData.image?.min_disk_size || 10,
+				min_memory: 512, // OS images can work with 512MB
+				type: 'os'
+			};
+			await env.DROPLET_CREATION.put(`image_${imageSlug}`, JSON.stringify(details), { expirationTtl: 3600 });
+			return details;
+		}
+	} catch (error) {
+		console.error('Error getting image details:', error);
+		// Return safe defaults
+		return {
+			slug: imageSlug,
+			min_disk_size: 25,
+			min_memory: 1024,
+			type: 'unknown'
+		};
+	}
 }
 
 // === TOKEN MANAGEMENT ===
@@ -268,14 +316,14 @@ async function handleCallbackQuery(callbackQuery, env) {
 		const slug = data.replace('select_app:', '');
 		const displayName = APP_DISPLAY_NAMES[slug] || slug;
 		await editMessage(chatId, messageId, `✅ *App selected:* ${displayName}`, env);
-		await setState(chatId, { image: slug }, env);
+		await setState(chatId, { image: slug, imageType: 'app' }, env);
 		await showRegions(chatId, env);
 	}
 	// OS selection
 	else if (data.startsWith('select_os:')) {
 		const slug = data.replace('select_os:', '');
 		await editMessage(chatId, messageId, `✅ *OS selected:* ${slug}`, env);
-		await setState(chatId, { image: slug }, env);
+		await setState(chatId, { image: slug, imageType: 'os' }, env);
 		await showRegions(chatId, env);
 	}
 	// Region selection
@@ -285,7 +333,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 		state.region = region;
 		await setState(chatId, state, env);
 		await deleteMessage(chatId, messageId, env);
-		await showSizes(chatId, region, env);
+		await showSizes(chatId, region, state.image, state.imageType, env);
 	}
 	// Size selection
 	else if (data.startsWith('size_')) {
@@ -339,7 +387,8 @@ async function handleCallbackQuery(callbackQuery, env) {
 		await showRegionsEdit(chatId, messageId, env);
 	} else if (data.startsWith('back_to_sizes_')) {
 		const region = data.replace('back_to_sizes_', '');
-		await showSizesEdit(chatId, messageId, region, env);
+		const state = await getState(chatId, env);
+		await showSizesEdit(chatId, messageId, region, state.image, state.imageType, env);
 	}
 }
 
@@ -465,34 +514,90 @@ async function showRegionsEdit(chatId, messageId, env) {
 	await editMessage(chatId, messageId, '🌍 *Select a region:*', env, { inline_keyboard: keyboard });
 }
 
-async function showSizes(chatId, region, env) {
+async function showSizes(chatId, region, imageSlug, imageType, env) {
 	const apiToken = await getUserApiToken(chatId, env);
+	
+	// Get image requirements
+	const imageDetails = await getImageDetails(imageSlug, apiToken, env);
+	
 	const data = await doApiCall('/sizes', 'GET', apiToken);
+	
+	// Filter sizes based on requirements
 	const availableSizes = data.sizes
-		.filter(size => size.available && size.regions.includes(region))
+		.filter(size => {
+			// Must be available in selected region
+			if (!size.available || !size.regions.includes(region)) return false;
+			
+			// Check disk size requirement
+			if (size.disk < imageDetails.min_disk_size) return false;
+			
+			// Check memory requirement
+			if (size.memory < imageDetails.min_memory) return false;
+			
+			return true;
+		})
 		.sort((a, b) => a.price_monthly - b.price_monthly);
+	
+	if (availableSizes.length === 0) {
+		const warningText = `⚠️ *No compatible sizes found!*\n\n` +
+			`*${imageSlug}* requires:\n` +
+			`• Minimum ${imageDetails.min_disk_size}GB disk\n` +
+			`• Minimum ${Math.ceil(imageDetails.min_memory / 1024)}GB RAM\n\n` +
+			`Try another region or image.`;
+		await sendMessage(chatId, warningText, env);
+		return;
+	}
+	
 	const keyboard = availableSizes.map(size => [{
-		text: `${size.slug} - $${size.price_monthly}/mo (${size.memory}MB RAM)`,
+		text: `${size.slug} - $${size.price_monthly}/mo (${Math.ceil(size.memory / 1024)}GB RAM, ${size.disk}GB)`,
 		callback_data: `size_${region}_${size.slug}`
 	}]);
+	
+	const infoText = imageType === 'app' 
+		? `💰 *Select a plan:*\n\n✅ Filtered for ${imageSlug} requirements` 
+		: `💰 *Select a plan:*`;
+	
 	keyboard.push([{ text: '◀️ Back', callback_data: 'back_to_regions' }]);
 	keyboard.push([{ text: '❌ Cancel', callback_data: 'cancel_create' }]);
-	await sendMessage(chatId, '💰 *Select a plan:*', env, { inline_keyboard: keyboard });
+	await sendMessage(chatId, infoText, env, { inline_keyboard: keyboard });
 }
 
-async function showSizesEdit(chatId, messageId, region, env) {
+async function showSizesEdit(chatId, messageId, region, imageSlug, imageType, env) {
 	const apiToken = await getUserApiToken(chatId, env);
+	
+	// Get image requirements
+	const imageDetails = await getImageDetails(imageSlug, apiToken, env);
+	
 	const data = await doApiCall('/sizes', 'GET', apiToken);
+	
+	// Filter sizes based on requirements
 	const availableSizes = data.sizes
-		.filter(size => size.available && size.regions.includes(region))
+		.filter(size => {
+			if (!size.available || !size.regions.includes(region)) return false;
+			if (size.disk < imageDetails.min_disk_size) return false;
+			if (size.memory < imageDetails.min_memory) return false;
+			return true;
+		})
 		.sort((a, b) => a.price_monthly - b.price_monthly);
+	
+	if (availableSizes.length === 0) {
+		const warningText = `⚠️ *No compatible sizes!*\n\nRequires ${imageDetails.min_disk_size}GB disk, ${Math.ceil(imageDetails.min_memory / 1024)}GB RAM`;
+		await editMessage(chatId, messageId, warningText, env);
+		return;
+	}
+	
 	const keyboard = availableSizes.map(size => [{
-		text: `${size.slug} - $${size.price_monthly}/mo (${size.memory}MB RAM)`,
+		text: `${size.slug} - $${size.price_monthly}/mo (${Math.ceil(size.memory / 1024)}GB RAM, ${size.disk}GB)`,
 		callback_data: `size_${region}_${size.slug}`
 	}]);
+	
+	const infoText = imageType === 'app' 
+		? `💰 *Select a plan:*\n\n✅ Filtered for requirements` 
+		: `💰 *Select a plan:*`;
+	
 	keyboard.push([{ text: '◀️ Back', callback_data: 'back_to_regions' }]);
 	keyboard.push([{ text: '❌ Cancel', callback_data: 'cancel_create' }]);
-	await editMessage(chatId, messageId, '💰 *Select a plan:*', env, { inline_keyboard: keyboard });
+	await editMessage(chatId, messageId, infoText, env, { inline_keyboard: keyboard });
 }
 
 // === DROPLET NAME & CREATION ===
