@@ -11,6 +11,7 @@
  * - /setapi: Configure DigitalOcean API token
  * - /droplets: List and manage droplets
  * - /create: Region-first creation flow
+ * - /clearcache: Clear all cache data (keeps API token)
  * - Rebuild: Smart filtering based on droplet specs
  * - SSH key management
  */
@@ -127,12 +128,40 @@ async function clearUserSessions(userId, env) {
 	try {
 		const listResult = await env.DROPLET_CREATION.list({ prefix: `session_${userId}_` });
 		const createListResult = await env.DROPLET_CREATION.list({ prefix: `create_${userId}_` });
-		const allKeys = [...listResult.keys.map(k => k.name), ...createListResult.keys.map(k => k.name)];
+		const stateResult = await env.DROPLET_CREATION.list({ prefix: `state_${userId}` });
+		const rebuildResult = await env.DROPLET_CREATION.list({ prefix: `rebuild_${userId}_` });
+		const allKeys = [
+			...listResult.keys.map(k => k.name), 
+			...createListResult.keys.map(k => k.name),
+			...stateResult.keys.map(k => k.name),
+			...rebuildResult.keys.map(k => k.name)
+		];
 		for (const key of allKeys) {
 			await env.DROPLET_CREATION.delete(key);
 		}
 	} catch (error) {
 		console.error('Error clearing sessions:', error);
+	}
+}
+
+// Clear all cache data (images, apps) but keep API tokens
+async function clearAllCache(env) {
+	try {
+		let deletedCount = 0;
+		const prefixes = ['image_', 'marketplace_apps'];
+		
+		for (const prefix of prefixes) {
+			const listResult = await env.DROPLET_CREATION.list({ prefix: prefix });
+			for (const key of listResult.keys) {
+				await env.DROPLET_CREATION.delete(key.name);
+				deletedCount++;
+			}
+		}
+		
+		return deletedCount;
+	} catch (error) {
+		console.error('Error clearing cache:', error);
+		return 0;
 	}
 }
 
@@ -226,7 +255,7 @@ async function handleMessage(message, env) {
 		return;
 	}
 
-	if (message.reply_to_message?.text?.includes('Default name:')) {
+	if (message.reply_to_message?.text?.includes('Default name:') || message.reply_to_message?.text?.includes('Default:')) {
 		const lines = message.reply_to_message.text.split('\n');
 		const region = lines.find(l => l.startsWith('Region:'))?.split(':')[1].trim();
 		const size = lines.find(l => l.startsWith('Size:'))?.split(':')[1].trim();
@@ -245,7 +274,7 @@ async function handleMessage(message, env) {
 	if (text === '/start') {
 		const hasApiToken = await getUserApiToken(chatId, env);
 		const welcomeMsg = hasApiToken
-			? '👋 Welcome!\n\nCommands:\n/droplets - List droplets\n/create - Create new droplet\n/setapi - Change API token'
+			? '👋 Welcome!\n\nCommands:\n/droplets - List droplets\n/create - Create new droplet\n/clearcache - Clear cache data\n/setapi - Change API token'
 			: '👋 Welcome!\n\n⚠️ Set your API token first with /setapi';
 		await sendMessage(chatId, welcomeMsg, env);
 	} else if (text === '/setapi') {
@@ -258,6 +287,14 @@ async function handleMessage(message, env) {
 		await listDroplets(chatId, env);
 	} else if (text === '/create') {
 		await showRegions(chatId, env);
+	} else if (text === '/clearcache') {
+		const msg = await sendMessage(chatId, '⏳ Clearing cache...', env);
+		const count = await clearAllCache(env);
+		await clearUserSessions(chatId, env);
+		if (msg.result?.message_id) {
+			await deleteMessage(chatId, msg.result.message_id, env);
+		}
+		await sendMessage(chatId, `✅ Cache cleared!\n\n🗑️ Deleted ${count} cached items\n🔄 Cleared your sessions\n\n💡 API token preserved`, env);
 	}
 }
 
@@ -316,10 +353,6 @@ async function handleCallbackQuery(callbackQuery, env) {
 		const parts = data.replace('selectimg_', '').split('_');
 		const region = parts[0];
 		const imageSlug = parts.slice(1).join('_');
-		const state = await getState(chatId, env);
-		state.region = region;
-		state.image = imageSlug;
-		await setState(chatId, state, env);
 		await deleteMessage(chatId, messageId, env);
 		await showSizes(chatId, region, imageSlug, env);
 	}
@@ -330,6 +363,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 		const size = parts.slice(1).join('_');
 		const state = await getState(chatId, env);
 		state.size = size;
+		state.region = region;
 		await setState(chatId, state, env);
 		await deleteMessage(chatId, messageId, env);
 		await askDropletName(chatId, state.image, size, region, env);
@@ -506,12 +540,13 @@ async function handleAppSearch(chatId, query, region, env) {
 		await sendMessage(chatId, '❌ No apps found. Try again:', env);
 		return;
 	}
+	// Region is embedded in callback data, no need for state here
 	const keyboard = results.slice(0, 15).map(app => [{
 		text: APP_DISPLAY_NAMES[app.slug] || app.slug,
 		callback_data: `selectimg_${region}_${app.slug}`
 	}]);
 	await sendMessage(chatId, `📦 Found ${results.length} app(s):`, env, { inline_keyboard: keyboard });
-	// Clear only the 'step' but keep region
+	// Clear search step
 	await setState(chatId, { region: region }, env);
 }
 
@@ -535,6 +570,9 @@ async function showSizes(chatId, region, imageSlug, env) {
 		await sendMessage(chatId, warningText, env);
 		return;
 	}
+	
+	// Save image to state for later use
+	await setState(chatId, { region: region, image: imageSlug }, env);
 	
 	const keyboard = availableSizes.map(size => [{
 		text: `${size.slug} - $${size.price_monthly}/mo (${Math.ceil(size.memory / 1024)}GB RAM, ${size.disk}GB)`,
