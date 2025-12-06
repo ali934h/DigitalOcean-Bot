@@ -511,7 +511,8 @@ async function handleAppSearch(chatId, query, region, env) {
 		callback_data: `selectimg_${region}_${app.slug}`
 	}]);
 	await sendMessage(chatId, `📦 Found ${results.length} app(s):`, env, { inline_keyboard: keyboard });
-	await clearState(chatId, env);
+	// Clear only the 'step' but keep region
+	await setState(chatId, { region: region }, env);
 }
 
 // === SIZE SELECTION (STEP 3) ===
