@@ -271,22 +271,33 @@ async function handleMessage(message, env) {
 		}
 	}
 
+	// Check state for search modes
 	const state = await getState(chatId, env);
+	
+	// Handle app search for create flow
 	if (state?.step === 'searching_app') {
 		await handleAppSearch(chatId, text, state.region, env);
 		return;
-	} else if (state?.step === 'rebuild_search_app') {
+	}
+	
+	// Handle app search for rebuild flow
+	if (state?.step === 'rebuild_search_app') {
 		await handleRebuildAppSearch(chatId, text, state.dropletId, env);
 		return;
 	}
 
+	// Commands (always work regardless of state)
 	if (text === '/start') {
+		// Clear any stuck state
+		await clearState(chatId, env);
 		const hasApiToken = await getUserApiToken(chatId, env);
 		const welcomeMsg = hasApiToken
 			? '👋 Welcome!\n\nCommands:\n/droplets - List droplets\n/create - Create new droplet\n/clearcache - Clear cache data\n/setapi - Change API token'
 			: '👋 Welcome!\n\n⚠️ Set your API token first with /setapi';
 		await sendMessage(chatId, welcomeMsg, env);
 	} else if (text === '/setapi') {
+		// Clear any stuck state
+		await clearState(chatId, env);
 		const hasExisting = await getUserApiToken(chatId, env);
 		const tokenText = hasExisting
 			? '🔑 *Change API Token*\n\n⚠️ This will clear all sessions.\n\nReply to this message with your new DigitalOcean API token.'
@@ -294,10 +305,16 @@ async function handleMessage(message, env) {
 		const keyboard = { force_reply: true, selective: true };
 		await sendMessage(chatId, tokenText, env, keyboard);
 	} else if (text === '/droplets') {
+		// Clear any stuck state
+		await clearState(chatId, env);
 		await listDroplets(chatId, env);
 	} else if (text === '/create') {
+		// Clear any stuck state
+		await clearState(chatId, env);
 		await showRegions(chatId, env);
 	} else if (text === '/clearcache') {
+		// Clear any stuck state
+		await clearState(chatId, env);
 		const msg = await sendMessage(chatId, '⏳ Clearing cache...', env);
 		const count = await clearAllCache(env);
 		await clearUserSessions(chatId, env);
@@ -862,7 +879,9 @@ async function handleRebuildAppSearch(chatId, query, dropletId, env) {
 	const results = apps.filter(app => app.slug.toLowerCase().includes(term));
 	
 	if (results.length === 0) {
-		await sendMessage(chatId, '❌ No apps found. Try again:', env);
+		// Clear state when no results
+		await clearState(chatId, env);
+		await sendMessage(chatId, '❌ No apps found. Use /droplets to try again.', env);
 		return;
 	}
 	
@@ -876,7 +895,9 @@ async function handleRebuildAppSearch(chatId, query, dropletId, env) {
 	}
 	
 	if (compatibleResults.length === 0) {
-		await sendMessage(chatId, `❌ Found apps but none compatible with your droplet (${currentDisk}GB/${Math.ceil(currentMemory/1024)}GB)`, env);
+		// Clear state when no compatible apps
+		await clearState(chatId, env);
+		await sendMessage(chatId, `❌ Found apps but none compatible with your droplet (${currentDisk}GB/${Math.ceil(currentMemory/1024)}GB)\n\nUse /droplets to try again.`, env);
 		return;
 	}
 	
@@ -885,6 +906,7 @@ async function handleRebuildAppSearch(chatId, query, dropletId, env) {
 		callback_data: `rebuildimg_${dropletId}_${app.slug}`
 	}]);
 	await sendMessage(chatId, `📦 Found ${compatibleResults.length} compatible app(s):`, env, { inline_keyboard: keyboard });
+	// Clear state after showing results
 	await clearState(chatId, env);
 }
 
