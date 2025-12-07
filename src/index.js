@@ -1,12 +1,13 @@
 /**
- * DigitalOcean Telegram Bot - Images API Version
+ * DigitalOcean Telegram Bot - Fixed Version
  * 
- * NEW FEATURES:
- * - Uses /v2/images API (applications, base OS, snapshots)
- * - No hardcoded apps - all data from API
- * - Pagination (20 items per page)
- * - Search functionality (min 3 chars)
- * - Smart filtering by region and min_disk_size
+ * FIXES:
+ * - Proper pagination through ALL images (using meta.total)
+ * - Separate handling for snapshots (private=true)
+ * - Cache: OS & Apps (1 day), Snapshots (no cache)
+ * - Fixed search lockup (clearState + Back button)
+ * - Added Back buttons in all steps
+ * - Correct type filtering (base, application, snapshot)
  * 
  * FLOW:
  * Create: Region → [OS | Apps | Snapshots] → Size (filtered) → Name → Confirm
@@ -15,7 +16,8 @@
 
 const ITEMS_PER_PAGE = 20;
 const MIN_SEARCH_LENGTH = 3;
-const CACHE_TTL_IMAGES = 86400; // 24 hours for images
+const CACHE_TTL = 86400; // 24 hours for OS and Apps
+const IMAGES_PER_PAGE = 200; // DigitalOcean API limit
 
 export default {
 	async fetch(request, env) {
@@ -60,19 +62,63 @@ async function doApiCall(endpoint, method, apiToken, body = null) {
 	return await response.json();
 }
 
-// Get all images by type (application, base, snapshot)
-async function getImagesByType(type, apiToken, env) {
+// Get ALL images with proper pagination
+async function getAllImages(apiToken, env) {
 	try {
-		const cacheKey = `images_${type}`;
+		const cacheKey = 'all_images_cache';
 		const cached = await env.DROPLET_CREATION.get(cacheKey);
 		if (cached) return JSON.parse(cached);
 
-		const data = await doApiCall(`/images?type=${type}&per_page=200`, 'GET', apiToken);
-		const images = data.images || [];
+		let allImages = [];
+		let page = 1;
+		let totalPages = 1;
+
+		// First request to get meta.total
+		const firstPage = await doApiCall(`/images?page=1&per_page=${IMAGES_PER_PAGE}`, 'GET', apiToken);
+		allImages = allImages.concat(firstPage.images || []);
 		
-		// Cache for 24 hours
-		await env.DROPLET_CREATION.put(cacheKey, JSON.stringify(images), { expirationTtl: CACHE_TTL_IMAGES });
-		return images;
+		if (firstPage.meta && firstPage.meta.total) {
+			totalPages = Math.ceil(firstPage.meta.total / IMAGES_PER_PAGE);
+		}
+
+		// Fetch remaining pages
+		for (page = 2; page <= totalPages; page++) {
+			const pageData = await doApiCall(`/images?page=${page}&per_page=${IMAGES_PER_PAGE}`, 'GET', apiToken);
+			allImages = allImages.concat(pageData.images || []);
+		}
+
+		// Cache for 1 day
+		await env.DROPLET_CREATION.put(cacheKey, JSON.stringify(allImages), { expirationTtl: CACHE_TTL });
+		return allImages;
+	} catch (error) {
+		console.error('Error getting all images:', error);
+		return [];
+	}
+}
+
+// Get snapshots only (no cache)
+async function getSnapshots(apiToken) {
+	try {
+		const data = await doApiCall('/images?private=true', 'GET', apiToken);
+		return data.images || [];
+	} catch (error) {
+		console.error('Error getting snapshots:', error);
+		return [];
+	}
+}
+
+// Get images by type with proper caching
+async function getImagesByType(type, apiToken, env) {
+	try {
+		// For snapshots, don't use cache
+		if (type === 'snapshot') {
+			return await getSnapshots(apiToken);
+		}
+
+		// For OS and Apps, get from all images and filter
+		const allImages = await getAllImages(apiToken, env);
+		const typeFilter = type === 'os' ? 'base' : type;
+		return allImages.filter(img => img.type === typeFilter && img.status === 'available');
 	} catch (error) {
 		console.error(`Error getting ${type} images:`, error);
 		return [];
@@ -82,7 +128,7 @@ async function getImagesByType(type, apiToken, env) {
 // Filter images by region
 function filterImagesByRegion(images, region) {
 	return images.filter(img => {
-		if (!img.regions || img.regions.length === 0) return true; // Public images
+		if (!img.regions || img.regions.length === 0) return true;
 		return img.regions.includes(region);
 	});
 }
@@ -92,7 +138,6 @@ function filterImagesForRebuild(images, droplet) {
 	return images.filter(img => {
 		if (img.status !== 'available') return false;
 		if (img.min_disk_size > droplet.disk) return false;
-		// Check region compatibility
 		if (img.regions && img.regions.length > 0 && !img.regions.includes(droplet.region.slug)) {
 			return false;
 		}
@@ -141,11 +186,11 @@ async function clearUserSessions(userId, env) {
 	}
 }
 
-// Clear all cache data (images) but keep API tokens
+// Clear all cache data but keep API tokens
 async function clearAllCache(env) {
 	try {
 		let deletedCount = 0;
-		const prefixes = ['images_'];
+		const prefixes = ['all_images_cache'];
 		
 		for (const prefix of prefixes) {
 			const listResult = await env.DROPLET_CREATION.list({ prefix: prefix });
@@ -230,13 +275,15 @@ async function handleMessage(message, env) {
 		}
 		
 		// Detect droplet name reply
-		if (replyText.includes('Default name:') || replyText.includes('Default:')) {
+		if (replyText.includes('Default:')) {
 			const lines = replyText.split('\n');
 			const region = lines.find(l => l.startsWith('Region:'))?.split(':')[1].trim();
 			const size = lines.find(l => l.startsWith('Size:'))?.split(':')[1].trim();
-			const image = lines.find(l => l.startsWith('Image:'))?.split(':')[1].trim();
+			const imageIdLine = lines.find(l => l.startsWith('Image ID:'));
+			if (!imageIdLine) return;
+			const imageId = imageIdLine.split(':')[1].trim();
 			await deleteMessage(chatId, message.reply_to_message.message_id, env);
-			await confirmDropletCreation(chatId, text, region, size, image, env);
+			await confirmDropletCreation(chatId, text, region, size, imageId, env);
 			return;
 		}
 	}
@@ -250,7 +297,7 @@ async function handleMessage(message, env) {
 	}
 	
 	if (state?.step === 'rebuild_searching_image') {
-		await handleRebuildImageSearch(chatId, text, state.dropletId, env);
+		await handleRebuildImageSearch(chatId, text, state, env);
 		return;
 	}
 
@@ -310,7 +357,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 	else if (data.startsWith('imgtype_')) {
 		const parts = data.replace('imgtype_', '').split('_');
 		const region = parts[0];
-		const type = parts[1]; // os, app, snapshot
+		const type = parts[1];
 		await deleteMessage(chatId, messageId, env);
 		await showImagesList(chatId, region, type, 0, env);
 	}
@@ -330,6 +377,14 @@ async function handleCallbackQuery(callbackQuery, env) {
 		await deleteMessage(chatId, messageId, env);
 		await sendMessage(chatId, `🔍 *Search ${type === 'app' ? 'Applications' : type === 'os' ? 'OS' : 'Snapshots'}*\n\nType at least ${MIN_SEARCH_LENGTH} characters:`, env);
 		await setState(chatId, { step: 'searching_image', region: region, type: type }, env);
+	}
+	// Back from search (NEW)
+	else if (data.startsWith('back_from_search_')) {
+		const parts = data.replace('back_from_search_', '').split('_');
+		const region = parts[0];
+		await clearState(chatId, env);
+		await deleteMessage(chatId, messageId, env);
+		await showImageTypeSelection(chatId, region, env);
 	}
 	// Image selection
 	else if (data.startsWith('selectimg_')) {
@@ -403,6 +458,13 @@ async function handleCallbackQuery(callbackQuery, env) {
 		await deleteMessage(chatId, messageId, env);
 		await sendMessage(chatId, `🔍 *Search ${type === 'app' ? 'Applications' : type === 'os' ? 'OS' : 'Snapshots'}*\n\nType at least ${MIN_SEARCH_LENGTH} characters:`, env);
 		await setState(chatId, { step: 'rebuild_searching_image', dropletId: dropletId, type: type }, env);
+	}
+	// Back from rebuild search (NEW)
+	else if (data.startsWith('back_from_rebuild_search_')) {
+		const dropletId = data.replace('back_from_rebuild_search_', '');
+		await clearState(chatId, env);
+		await deleteMessage(chatId, messageId, env);
+		await showRebuildImageTypeSelection(chatId, messageId, dropletId, env);
 	}
 	// Rebuild image selection
 	else if (data.startsWith('rebuildimg_')) {
@@ -499,14 +561,14 @@ async function showImagesList(chatId, region, type, page, env) {
 		return;
 	}
 	
-	const apiType = type === 'os' ? 'base' : type; // Convert 'os' to 'base' for API
-	let allImages = await getImagesByType(apiType, apiToken, env);
+	let allImages = await getImagesByType(type, apiToken, env);
 	
 	// Filter by region
 	allImages = filterImagesByRegion(allImages, region);
 	
 	if (allImages.length === 0) {
-		await sendMessage(chatId, `❌ No ${type === 'app' ? 'applications' : type === 'os' ? 'OS images' : 'snapshots'} available in ${region}.`, env);
+		const typeLabel = type === 'app' ? 'applications' : type === 'os' ? 'OS images' : 'snapshots';
+		await sendMessage(chatId, `❌ No ${typeLabel} available in ${region}.`, env);
 		return;
 	}
 	
@@ -532,19 +594,19 @@ async function showImagesList(chatId, region, type, page, env) {
 	}
 	if (navButtons.length > 0) keyboard.push(navButtons);
 	
-	// Search button
+	// Search and Back buttons
 	keyboard.push([{ text: '🔍 Search', callback_data: `imgsearch_${region}_${type}` }]);
 	keyboard.push([{ text: '◀️ Back', callback_data: 'back_to_regions' }]);
 	
 	const typeLabel = type === 'app' ? 'Applications' : type === 'os' ? 'Operating Systems' : 'Snapshots';
-	const text = `${typeLabel === 'Applications' ? '📦' : typeLabel === 'Operating Systems' ? '🐧' : '📸'} *${typeLabel}*\n\nPage ${page + 1}/${totalPages} (${allImages.length} total)`;
+	const emoji = typeLabel === 'Applications' ? '📦' : typeLabel === 'Operating Systems' ? '🐧' : '📸';
+	const text = `${emoji} *${typeLabel}*\n\nPage ${page + 1}/${totalPages} (${allImages.length} total)`;
 	await sendMessage(chatId, text, env, { inline_keyboard: keyboard });
 }
 
 async function showImagesListEdit(chatId, messageId, region, type, page, env) {
 	const apiToken = await getUserApiToken(chatId, env);
-	const apiType = type === 'os' ? 'base' : type;
-	let allImages = await getImagesByType(apiType, apiToken, env);
+	let allImages = await getImagesByType(type, apiToken, env);
 	allImages = filterImagesByRegion(allImages, region);
 	
 	const totalPages = Math.ceil(allImages.length / ITEMS_PER_PAGE);
@@ -570,11 +632,12 @@ async function showImagesListEdit(chatId, messageId, region, type, page, env) {
 	keyboard.push([{ text: '◀️ Back', callback_data: 'back_to_regions' }]);
 	
 	const typeLabel = type === 'app' ? 'Applications' : type === 'os' ? 'Operating Systems' : 'Snapshots';
-	const text = `${typeLabel === 'Applications' ? '📦' : typeLabel === 'Operating Systems' ? '🐧' : '📸'} *${typeLabel}*\n\nPage ${page + 1}/${totalPages} (${allImages.length} total)`;
+	const emoji = typeLabel === 'Applications' ? '📦' : typeLabel === 'Operating Systems' ? '🐧' : '📸';
+	const text = `${emoji} *${typeLabel}*\n\nPage ${page + 1}/${totalPages} (${allImages.length} total)`;
 	await editMessage(chatId, messageId, text, env, { inline_keyboard: keyboard });
 }
 
-// === IMAGE SEARCH ===
+// === IMAGE SEARCH (FIXED) ===
 
 async function handleImageSearch(chatId, query, state, env) {
 	if (query.length < MIN_SEARCH_LENGTH) {
@@ -583,15 +646,19 @@ async function handleImageSearch(chatId, query, state, env) {
 	}
 	
 	const apiToken = await getUserApiToken(chatId, env);
-	const apiType = state.type === 'os' ? 'base' : state.type;
-	let allImages = await getImagesByType(apiType, apiToken, env);
+	let allImages = await getImagesByType(state.type, apiToken, env);
 	allImages = filterImagesByRegion(allImages, state.region);
 	
 	const searchTerm = query.toLowerCase();
 	const results = allImages.filter(img => img.name.toLowerCase().includes(searchTerm));
 	
 	if (results.length === 0) {
-		await sendMessage(chatId, '❌ No results found. Try another search:', env);
+		// FIXED: Clear state and provide back button
+		await clearState(chatId, env);
+		const keyboard = {
+			inline_keyboard: [[{ text: '◀️ Back to Menu', callback_data: `back_from_search_${state.region}` }]]
+		};
+		await sendMessage(chatId, '❌ No results found.', env, keyboard);
 		return;
 	}
 	
@@ -607,6 +674,8 @@ async function handleImageSearch(chatId, query, state, env) {
 	if (totalPages > 1) {
 		keyboard.push([{ text: 'Next ▶️', callback_data: `imgpage_${state.region}_${state.type}_1` }]);
 	}
+	
+	keyboard.push([{ text: '◀️ Back', callback_data: `back_from_search_${state.region}` }]);
 	
 	await sendMessage(chatId, `🔍 Found ${results.length} result(s)\n\nPage 1/${totalPages}`, env, { inline_keyboard: keyboard });
 	await clearState(chatId, env);
@@ -627,7 +696,7 @@ async function showSizes(chatId, region, imageId, env) {
 	}
 	
 	// Get region details for available sizes
-	const regionData = await doApiCall(`/regions`, 'GET', apiToken);
+	const regionData = await doApiCall('/regions', 'GET', apiToken);
 	const regionInfo = regionData.regions.find(r => r.slug === region);
 	const regionSizes = regionInfo?.sizes || [];
 	
@@ -682,7 +751,7 @@ async function askDropletName(chatId, imageId, size, region, env) {
 	const keyboard = {
 		inline_keyboard: [
 			[{ text: '✅ Use Default', callback_data: `use_default_name_${sessionId}` }],
-			[{ text: '❌ Cancel', callback_data: 'cancel_create' }],
+			[{ text: '◀️ Back', callback_data: 'back_to_regions' }],
 		]
 	};
 	await sendMessage(chatId, text, env, keyboard);
@@ -715,7 +784,7 @@ async function confirmDropletCreation(chatId, name, region, size, imageId, env) 
 	const keyboard = {
 		inline_keyboard: [
 			[{ text: '✅ Create', callback_data: `confirmcreate_${creationId}` }],
-			[{ text: '❌ Cancel', callback_data: 'cancel_create' }],
+			[{ text: '◀️ Back', callback_data: 'back_to_regions' }],
 		]
 	};
 	await sendMessage(chatId, text, env, keyboard);
@@ -794,7 +863,7 @@ async function showDeleteConfirmation(chatId, messageId, dropletId, env) {
 	const keyboard = {
 		inline_keyboard: [
 			[{ text: '✅ Yes, Delete', callback_data: `delete_${dropletId}` }],
-			[{ text: '❌ Cancel', callback_data: `droplet_${dropletId}` }],
+			[{ text: '◀️ Back', callback_data: `droplet_${dropletId}` }],
 		]
 	};
 	await editMessage(chatId, messageId, '⚠️ Delete?\n\nCannot be undone!', env, keyboard);
@@ -827,7 +896,7 @@ async function editMessageToDropletList(chatId, messageId, env) {
 	await editMessage(chatId, messageId, 'Your Droplets:', env, { inline_keyboard: keyboard });
 }
 
-// === REBUILD ===
+// === REBUILD (FIXED) ===
 
 async function showRebuildImageTypeSelection(chatId, messageId, dropletId, env) {
 	const keyboard = {
@@ -854,14 +923,14 @@ async function showRebuildImagesList(chatId, messageId, dropletId, type, page, e
 	}
 	
 	// Get images
-	const apiType = type === 'os' ? 'base' : type;
-	let allImages = await getImagesByType(apiType, apiToken, env);
+	let allImages = await getImagesByType(type, apiToken, env);
 	
 	// Filter for rebuild compatibility
 	allImages = filterImagesForRebuild(allImages, droplet);
 	
 	if (allImages.length === 0) {
-		await editMessage(chatId, messageId, `❌ No compatible ${type === 'app' ? 'applications' : type === 'os' ? 'OS images' : 'snapshots'} for this droplet.`, env);
+		const typeLabel = type === 'app' ? 'applications' : type === 'os' ? 'OS images' : 'snapshots';
+		await editMessage(chatId, messageId, `❌ No compatible ${typeLabel} for this droplet.`, env);
 		return;
 	}
 	
@@ -889,32 +958,37 @@ async function showRebuildImagesList(chatId, messageId, dropletId, type, page, e
 	keyboard.push([{ text: '◀️ Back', callback_data: `rebuild_${dropletId}` }]);
 	
 	const typeLabel = type === 'app' ? 'Applications' : type === 'os' ? 'Operating Systems' : 'Snapshots';
-	const text = `${typeLabel === 'Applications' ? '📦' : typeLabel === 'Operating Systems' ? '🐧' : '📸'} *${typeLabel}*\n\n✅ Compatible with ${droplet.size_slug}\nPage ${page + 1}/${totalPages} (${allImages.length} total)`;
+	const emoji = typeLabel === 'Applications' ? '📦' : typeLabel === 'Operating Systems' ? '🐧' : '📸';
+	const text = `${emoji} *${typeLabel}*\n\n✅ Compatible with ${droplet.size_slug}\nPage ${page + 1}/${totalPages} (${allImages.length} total)`;
 	await editMessage(chatId, messageId, text, env, { inline_keyboard: keyboard });
 }
 
-async function handleRebuildImageSearch(chatId, query, dropletId, env) {
+async function handleRebuildImageSearch(chatId, query, state, env) {
 	if (query.length < MIN_SEARCH_LENGTH) {
 		await sendMessage(chatId, `❌ Search query too short. Min ${MIN_SEARCH_LENGTH} characters.`, env);
 		return;
 	}
 	
 	const apiToken = await getUserApiToken(chatId, env);
-	const state = await getState(chatId, env);
+	const dropletId = state.dropletId;
 	
 	// Get droplet details
 	const dropletData = await doApiCall(`/droplets/${dropletId}`, 'GET', apiToken);
 	const droplet = dropletData.droplet;
 	
-	const apiType = state.type === 'os' ? 'base' : state.type;
-	let allImages = await getImagesByType(apiType, apiToken, env);
+	let allImages = await getImagesByType(state.type, apiToken, env);
 	allImages = filterImagesForRebuild(allImages, droplet);
 	
 	const searchTerm = query.toLowerCase();
 	const results = allImages.filter(img => img.name.toLowerCase().includes(searchTerm));
 	
 	if (results.length === 0) {
-		await sendMessage(chatId, '❌ No results found. Try another search:', env);
+		// FIXED: Clear state and provide back button
+		await clearState(chatId, env);
+		const keyboard = {
+			inline_keyboard: [[{ text: '◀️ Back to Menu', callback_data: `back_from_rebuild_search_${dropletId}` }]]
+		};
+		await sendMessage(chatId, '❌ No results found.', env, keyboard);
 		return;
 	}
 	
@@ -922,6 +996,8 @@ async function handleRebuildImageSearch(chatId, query, dropletId, env) {
 		text: img.name,
 		callback_data: `rebuildimg_${dropletId}_${img.id}`
 	}]);
+	
+	keyboard.push([{ text: '◀️ Back', callback_data: `back_from_rebuild_search_${dropletId}` }]);
 	
 	await sendMessage(chatId, `🔍 Found ${results.length} result(s)`, env, { inline_keyboard: keyboard });
 	await clearState(chatId, env);
@@ -934,7 +1010,7 @@ async function confirmRebuild(chatId, messageId, dropletId, imageId, env) {
 	const keyboard = {
 		inline_keyboard: [
 			[{ text: '✅ Yes, Rebuild', callback_data: `execute_rebuild_${sessionId}` }],
-			[{ text: '❌ Cancel', callback_data: `droplet_${dropletId}` }],
+			[{ text: '◀️ Back', callback_data: `droplet_${dropletId}` }],
 		]
 	};
 	await editMessage(chatId, messageId, text, env, keyboard);
