@@ -11,6 +11,7 @@
  * - Improved UX for rename with force_reply button
  * - Fixed variable naming conflict in rename handler
  * - Fixed session expired by using state for sessionId
+ * - Fixed rebuild back button after search
  * 
  * FLOW:
  * Create: Region → [OS | Apps | Snapshots] → Size (filtered) → Name → Confirm
@@ -502,12 +503,12 @@ async function handleCallbackQuery(callbackQuery, env) {
 		await sendMessage(chatId, `🔍 *Search ${type === 'app' ? 'Applications' : type === 'os' ? 'OS' : 'Snapshots'}*\n\nType at least ${MIN_SEARCH_LENGTH} characters:`, env);
 		await setState(chatId, { step: 'rebuild_searching_image', dropletId: dropletId, type: type }, env);
 	}
-	// Back from rebuild search
+	// Back from rebuild search (FIXED - Send new message instead of editing deleted one!)
 	else if (data.startsWith('back_from_rebuild_search_')) {
 		const dropletId = data.replace('back_from_rebuild_search_', '');
 		await clearState(chatId, env);
 		await deleteMessage(chatId, messageId, env);
-		await showRebuildImageTypeSelection(chatId, messageId, dropletId, env);
+		await showRebuildImageTypeSelectionNew(chatId, dropletId, env);  // FIXED: Use new function!
 	}
 	// Rebuild image selection
 	else if (data.startsWith('rebuildimg_')) {
@@ -945,6 +946,7 @@ async function editMessageToDropletList(chatId, messageId, env) {
 
 // === REBUILD ===
 
+// Edit existing message (when accessed from droplet details)
 async function showRebuildImageTypeSelection(chatId, messageId, dropletId, env) {
 	const keyboard = {
 		inline_keyboard: [
@@ -955,6 +957,19 @@ async function showRebuildImageTypeSelection(chatId, messageId, dropletId, env) 
 		]
 	};
 	await editMessage(chatId, messageId, '🔄 *Rebuild Droplet*\n\n⚠️ All data will be deleted\n\nChoose image type:', env, keyboard);
+}
+
+// Send new message (when accessed from back button after search) - FIXED!
+async function showRebuildImageTypeSelectionNew(chatId, dropletId, env) {
+	const keyboard = {
+		inline_keyboard: [
+			[{ text: '🐧 Operating Systems', callback_data: `rebuildtype_${dropletId}_os` }],
+			[{ text: '📦 Applications', callback_data: `rebuildtype_${dropletId}_app` }],
+			[{ text: '📸 My Snapshots', callback_data: `rebuildtype_${dropletId}_snapshot` }],
+			[{ text: '◀️ Back', callback_data: `droplet_${dropletId}` }],
+		]
+	};
+	await sendMessage(chatId, '🔄 *Rebuild Droplet*\n\n⚠️ All data will be deleted\n\nChoose image type:', env, keyboard);
 }
 
 async function showRebuildImagesList(chatId, messageId, dropletId, type, page, env) {
