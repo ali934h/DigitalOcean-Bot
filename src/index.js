@@ -12,6 +12,7 @@
  * - Fixed variable naming conflict in rename handler
  * - Fixed session expired by using state for sessionId
  * - Fixed rebuild back button after search
+ * - Added interactive Menu button for easy command access
  * 
  * FLOW:
  * Create: Region → [OS | Apps | Snapshots] → Size (filtered) → Name → Confirm
@@ -32,6 +33,10 @@ export default {
 			const telegramApiUrl = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/setWebhook?url=${webhookUrl}`;
 			const response = await fetch(telegramApiUrl);
 			const result = await response.json();
+			
+			// Set Menu Button (appears next to message input)
+			await setMenuButton(env);
+			
 			return new Response(JSON.stringify(result, null, 2), {
 				headers: { 'Content-Type': 'application/json' },
 			});
@@ -245,6 +250,39 @@ async function deleteMessage(chatId, messageId, env) {
 	});
 }
 
+// Set Menu Button (appears next to message input box)
+async function setMenuButton(env) {
+	const url = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/setChatMenuButton`;
+	const body = {
+		menu_button: {
+			type: 'commands'
+		}
+	};
+	await fetch(url, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(body),
+	});
+}
+
+// Show main menu with inline buttons
+async function showMainMenu(chatId, env) {
+	const hasApiToken = await getUserApiToken(chatId, env);
+	const keyboard = {
+		inline_keyboard: [
+			[{ text: '📋 List Droplets', callback_data: 'menu_droplets' }],
+			[{ text: '🚀 Create Droplet', callback_data: 'menu_create' }],
+			[{ text: '🔑 API Token', callback_data: 'menu_setapi' }],
+			[{ text: '🗑️ Clear Cache', callback_data: 'menu_clearcache' }],
+			[{ text: 'ℹ️ Help', callback_data: 'menu_help' }],
+		]
+	};
+	
+	const status = hasApiToken ? '✅ API token configured' : '⚠️ No API token set';
+	const text = `🤖 *DigitalOcean Bot Menu*\n\n${status}\n\nSelect an option:`;
+	await sendMessage(chatId, text, env, keyboard);
+}
+
 // === MESSAGE HANDLERS ===
 
 async function handleMessage(message, env) {
@@ -324,13 +362,13 @@ async function handleMessage(message, env) {
 	}
 
 	// Commands
-	if (text === '/start') {
+	if (text === '/start' || text === '/menu') {
 		await clearState(chatId, env);
-		const hasApiToken = await getUserApiToken(chatId, env);
-		const welcomeMsg = hasApiToken
-			? '👋 Welcome!\n\nCommands:\n/droplets - List droplets\n/create - Create new droplet\n/clearcache - Clear cache data\n/setapi - Change API token'
-			: '👋 Welcome!\n\n⚠️ Set your API token first with /setapi';
-		await sendMessage(chatId, welcomeMsg, env);
+		await showMainMenu(chatId, env);
+	} else if (text === '/help') {
+		await clearState(chatId, env);
+		const helpText = `📚 *DigitalOcean Bot Help*\n\n*Commands:*\n• /menu - Show main menu\n• /droplets - List your droplets\n• /create - Create new droplet\n• /setapi - Set API token\n• /clearcache - Clear cached data\n• /help - Show this help\n\n*Features:*\n• Create droplets with OS/Apps/Snapshots\n• Rebuild existing droplets\n• Delete droplets\n• Search images\n• Smart caching for faster performance\n\n*Get API Token:*\nhttps://cloud.digitalocean.com/account/api/tokens`;
+		await sendMessage(chatId, helpText, env);
 	} else if (text === '/setapi') {
 		await clearState(chatId, env);
 		const hasExisting = await getUserApiToken(chatId, env);
@@ -367,6 +405,41 @@ async function handleCallbackQuery(callbackQuery, env) {
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ callback_query_id: callbackQuery.id }),
 	});
+
+	// Menu handlers
+	if (data === 'menu_droplets') {
+		await deleteMessage(chatId, messageId, env);
+		await listDroplets(chatId, env);
+		return;
+	} else if (data === 'menu_create') {
+		await deleteMessage(chatId, messageId, env);
+		await showRegions(chatId, env);
+		return;
+	} else if (data === 'menu_setapi') {
+		await deleteMessage(chatId, messageId, env);
+		const hasExisting = await getUserApiToken(chatId, env);
+		const tokenText = hasExisting
+			? '🔑 *Change API Token*\n\n⚠️ This will clear all sessions.\n\nReply to this message with your new DigitalOcean API token.'
+			: '🔑 *Setup API Token*\n\nReply to this message with your DigitalOcean API token.\n\nGet it at: https://cloud.digitalocean.com/';
+		const keyboard = { force_reply: true, selective: true };
+		await sendMessage(chatId, tokenText, env, keyboard);
+		return;
+	} else if (data === 'menu_clearcache') {
+		await deleteMessage(chatId, messageId, env);
+		const msg = await sendMessage(chatId, '⏳ Clearing cache...', env);
+		const count = await clearAllCache(env);
+		await clearUserSessions(chatId, env);
+		if (msg.result?.message_id) {
+			await deleteMessage(chatId, msg.result.message_id, env);
+		}
+		await sendMessage(chatId, `✅ Cache cleared!\n\n🗑️ Deleted ${count} cached items\n🔄 Cleared your sessions\n\n💡 API token preserved`, env);
+		return;
+	} else if (data === 'menu_help') {
+		await deleteMessage(chatId, messageId, env);
+		const helpText = `📚 *DigitalOcean Bot Help*\n\n*Commands:*\n• /menu - Show main menu\n• /droplets - List your droplets\n• /create - Create new droplet\n• /setapi - Set API token\n• /clearcache - Clear cached data\n• /help - Show this help\n\n*Features:*\n• Create droplets with OS/Apps/Snapshots\n• Rebuild existing droplets\n• Delete droplets\n• Search images\n• Smart caching for faster performance\n\n*Get API Token:*\nhttps://cloud.digitalocean.com/account/api/tokens`;
+		await sendMessage(chatId, helpText, env);
+		return;
+	}
 
 	// Region selection (STEP 1)
 	if (data.startsWith('region_')) {
