@@ -1,6 +1,6 @@
 # 🤖 DigitalOcean Telegram Bot
 
-A **serverless Telegram bot** to manage DigitalOcean Droplets directly from Telegram, powered by **Cloudflare Workers**.
+A **powerful serverless Telegram bot** to manage DigitalOcean Droplets directly from Telegram, powered by **Cloudflare Workers**.
 
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
 [![DigitalOcean](https://img.shields.io/badge/DigitalOcean-API-0080FF?logo=digitalocean&logoColor=white)](https://www.digitalocean.com/)
@@ -8,31 +8,69 @@ A **serverless Telegram bot** to manage DigitalOcean Droplets directly from Tele
 
 ## ✨ Features
 
+### 📱 Interactive UI
+- **Menu Button** - Quick access to all commands next to message input
+- **Slash Commands** - Type `/` to see all available commands with descriptions
+- **Inline Keyboards** - Beautiful interactive buttons for all actions
+- **Search Functionality** - Quickly find OS images, applications, and snapshots
+- **Pagination** - Browse through hundreds of images efficiently
+- **Multi-Step Wizards** - Guided workflows for complex operations
+
 ### 🖥️ Droplet Management
-- **List Droplets** - View all your droplets with status
-- **Droplet Details** - See comprehensive information (IP, RAM, vCPUs, disk, region, etc.)
-- **Create Droplet** - Interactive wizard with step-by-step selection:
-  - Choose from all available regions
-  - Select droplet size (sorted by price)
-  - Pick OS image (Ubuntu, Debian, CentOS, Fedora, Rocky Linux)
-  - Custom or auto-generated names
-- **Rebuild Droplet** - Reinstall with a new operating system
-- **Delete Droplet** - Remove droplets with confirmation
+- **List Droplets** - View all your droplets with real-time status
+- **Droplet Details** - Comprehensive information (IP, region, size, specs)
+- **Create Droplet** - Interactive creation wizard:
+  - 🌍 Choose from **all available regions**
+  - 💰 Select **size** (sorted by price, 15+ options)
+  - 🐧 Pick **Operating System** (Ubuntu, Debian, CentOS, Fedora, Rocky Linux, etc.)
+  - 📦 Install **Applications** (Docker, WordPress, LAMP, etc.)
+  - 📸 Use **Your Snapshots**
+  - 🔍 **Search** through 200+ images
+  - 📝 Custom or auto-generated names
+  - ✅ Confirmation with full details
+- **Rebuild Droplet** - Reinstall with a new OS while keeping IP:
+  - 🔄 Change OS without creating new droplet
+  - ⚡ Compatibility check (disk size, region)
+  - 📸 Support for snapshots
+  - ⚠️ Safe confirmation workflow
+- **Delete Droplet** - Remove droplets with double confirmation
+
+### 🚀 Performance & Reliability
+- **Smart Caching** - Images cached for 24 hours (reduces API calls)
+- **Optimized Pagination** - Fetch all images once, page locally
+- **Snapshot Fresh Data** - Snapshots always fetched live (no cache)
+- **Session Management** - Auto-expiring temporary data (10 min)
+- **Zero Cold Starts** - Instant responses on Cloudflare's edge network
+- **Global CDN** - Low latency from anywhere in the world
 
 ### 🔐 Security Features
-- **Per-User API Tokens** - Each user stores their own DigitalOcean API token securely
+- **Per-User API Tokens** - Each user stores their own DigitalOcean API token
+- **Token Validation** - Automatic verification before saving
 - **SSH Key Authentication** - Only SSH keys, no passwords
 - **User Whitelist** - Restrict access to specific Telegram user IDs
-- **Secure Storage** - API tokens stored encrypted in Cloudflare KV
-- **Session Management** - Temporary data with auto-expiration
+- **Secure Storage** - API tokens encrypted in Cloudflare KV
+- **Session Isolation** - Each user's data is completely separate
+- **Auto Token Cleanup** - API tokens never exposed or logged
 
-### ⚡ Technical Highlights
-- **Serverless Architecture** - Runs on Cloudflare's global edge network
-- **Zero Cold Starts** - Instant response times
-- **Interactive UI** - Inline keyboards for smooth user experience
-- **Smart Naming** - Auto-generated droplet names based on config
-- **Multi-step Wizard** - Guided droplet creation process
-- **Error Handling** - Comprehensive error messages and validations
+### 🛠️ Technical Highlights
+- **Serverless Architecture** - No servers to manage
+- **Cloudflare Workers** - Runs on the edge, globally distributed
+- **State Management** - Stateful conversations with KV storage
+- **Error Handling** - Comprehensive validation and user feedback
+- **Rate Limiting** - Built-in Cloudflare protection
+- **Logging** - Real-time logs with `wrangler tail`
+
+## 📝 Bot Commands
+
+| Command | Description |
+|---------|-------------|
+| `/start` | Start the bot and show main menu |
+| `/menu` | Display interactive menu with all options |
+| `/droplets` | List all your droplets |
+| `/create` | Create a new droplet (guided wizard) |
+| `/setapi` | Configure or change your DigitalOcean API token |
+| `/clearcache` | Clear cached image data (force refresh) |
+| `/help` | Show detailed help and feature list |
 
 ## 🚀 Quick Start Guide
 
@@ -42,7 +80,7 @@ Before you begin, make sure you have:
 - A [Cloudflare account](https://dash.cloudflare.com/sign-up) (free tier works)
 - A [DigitalOcean account](https://www.digitalocean.com/)
 - A [Telegram account](https://telegram.org/)
-- [Node.js](https://nodejs.org/) v18 or higher installed
+- [Node.js](https://nodejs.org/) v18+ installed
 
 ### Step 1: Create Your Telegram Bot
 
@@ -63,12 +101,12 @@ Before you begin, make sure you have:
 
 #### 3.1: Add SSH Key (Required)
 
-You need at least one SSH key in your DigitalOcean account for secure droplet access.
+You need at least one SSH key in your DigitalOcean account.
 
 ```bash
-# If you don't have an SSH key, generate one:
+# Generate SSH key if you don't have one:
 ssh-keygen -t rsa -b 4096 -C "your_email@example.com"
-# Press Enter for all prompts (use default location and no passphrase)
+# Press Enter for all prompts
 
 # Display your public key:
 cat ~/.ssh/id_rsa.pub
@@ -82,14 +120,14 @@ Now add it to DigitalOcean:
 4. Paste your public key and give it a name
 5. Click **Add SSH Key**
 
-#### 3.2: Create API Token (You'll use this later in Telegram)
+#### 3.2: Create API Token (You'll set this later in bot)
 
 1. In DigitalOcean Console, go to **API** → **Tokens/Keys**
 2. Click **Generate New Token**
 3. Name it (e.g., "Telegram Bot")
 4. Select **Read** and **Write** scopes
 5. Click **Generate Token**
-6. **Copy and save the token immediately** (it's only shown once)
+6. **Copy and save the token** (shown only once!)
 
 ### Step 4: Clone and Setup Project
 
@@ -102,61 +140,33 @@ cd DigitalOcean-Bot
 npm install
 ```
 
-#### 4.1: Customize Worker Configuration (Optional)
+#### 4.1: Customize Worker Configuration
 
-Open `wrangler.jsonc` and customize these settings:
+Open `wrangler.jsonc` and customize:
 
-**1. Change Worker Name (Subdomain):**
-
-The worker name determines your bot's URL. By default it's `telegram-do-bot`.
+**1. Change Worker Name:**
 
 ```json
 {
-  "name": "telegram-do-bot",  // Change this to your desired name
+  "name": "my-awesome-bot",  // Change this
   ...
 }
 ```
 
-For example, change to:
-```json
-{
-  "name": "my-awesome-bot",
-  ...
-}
-```
-
-This will make your URL:
-```
-https://my-awesome-bot.your-subdomain.workers.dev
-```
-
-**Note:** Worker names can only contain lowercase letters, numbers, and hyphens.
+This determines your URL: `https://my-awesome-bot.workers.dev`
 
 **2. Clear KV Namespace ID:**
 
-The KV namespace ID in the repository is from the original developer's account. You need to clear it and add your own.
-
-Find this section in `wrangler.jsonc`:
 ```json
 "kv_namespaces": [
     {
         "binding": "DROPLET_CREATION",
-        "id": "cedc1d65555547d4aae2d44acfb256f2"  // ← Clear this
+        "id": ""  // ← Clear the existing ID
     }
 ]
 ```
 
-Change it to:
-```json
-"kv_namespaces": [
-    {
-        "binding": "DROPLET_CREATION",
-        "id": ""  // ← Empty for now
-    }
-]
-```
-
-You'll fill in your own ID in the next step.
+You'll add your own in Step 5.2.
 
 ### Step 5: Configure Cloudflare
 
@@ -166,7 +176,7 @@ You'll fill in your own ID in the next step.
 npx wrangler login
 ```
 
-This will open a browser window. Click **Allow** to authorize Wrangler.
+Click **Allow** in the browser.
 
 #### 5.2: Create KV Namespace
 
@@ -174,42 +184,35 @@ This will open a browser window. Click **Allow** to authorize Wrangler.
 npx wrangler kv namespace create "DROPLET_CREATION"
 ```
 
-You'll see output like:
+You'll see:
 ```
 🎉 Successfully created KV namespace.
-Add the following to your configuration file in your kv_namespaces array:
-{ binding = "DROPLET_CREATION", id = "abc123xyz456..." }
+id = "abc123xyz456..."
 ```
 
-**Copy the ID** (e.g., `abc123xyz456...`) and update `wrangler.jsonc`:
+**Copy the ID** and update `wrangler.jsonc`:
 
 ```json
 "kv_namespaces": [
     {
         "binding": "DROPLET_CREATION",
-        "id": "abc123xyz456..."  // ← Paste your ID here
+        "id": "abc123xyz456..."  // ← Paste here
     }
 ]
 ```
 
-Save the file.
-
 #### 5.3: Set Secrets
-
-You need to configure two secrets:
 
 ```bash
 # Set Telegram Bot Token
 npx wrangler secret put TELEGRAM_BOT_TOKEN
-# When prompted, paste your Telegram bot token and press Enter
+# Paste your bot token and press Enter
 
 # Set Allowed User IDs
 npx wrangler secret put ALLOWED_USER_IDS
-# When prompted, enter your Telegram User ID (e.g., 123456789) and press Enter
-# For multiple users, separate with commas: 123456789,987654321
+# Enter your User ID (e.g., 123456789)
+# For multiple users: 123456789,987654321
 ```
-
-**Note:** Unlike traditional bots, each user will set their own DigitalOcean API token directly through the bot using the `/setapi` command. You don't need to configure it as a secret.
 
 ### Step 6: Deploy
 
@@ -217,272 +220,335 @@ npx wrangler secret put ALLOWED_USER_IDS
 npx wrangler deploy
 ```
 
-After successful deployment, you'll see output like:
+You'll see:
 ```
-Published my-awesome-bot (X.XX sec)
+Published my-awesome-bot
   https://my-awesome-bot.your-username.workers.dev
 ```
 
-**Copy this URL** - you'll need it in the next step.
+**Copy this URL!**
 
-### Step 7: Register Webhook
+### Step 7: Register Webhook & Enable Commands
 
 Open your browser and navigate to:
 ```
-https://your-worker-name.your-username.workers.dev/registerWebhook
+https://your-worker-name.workers.dev/registerWebhook
 ```
-
-Replace `your-worker-name` with the name you chose in Step 4.1.
 
 You should see:
 ```json
 {
-  "ok": true,
-  "result": true,
-  "description": "Webhook was set"
+  "webhook": { "ok": true, ... },
+  "commands": "registered",
+  "menuButton": "configured"
 }
 ```
 
-If you see this, your webhook is successfully registered! 🎉
+✅ **This step:**
+- Registers the Telegram webhook
+- Enables slash command autocomplete (`/`)
+- Activates the Menu button next to message input
 
 ### Step 8: Start Using the Bot
 
 1. Open Telegram
-2. Search for your bot (the username you created in Step 1)
+2. Search for your bot
 3. Send `/start`
-4. You'll see a welcome message asking you to configure your API token
-5. Send `/setapi`
-6. Reply to the bot's message with your DigitalOcean API token (from Step 3.2)
-7. The bot will validate and save your token
-8. Now you can use `/droplets` and `/create` commands!
+4. Send `/setapi` and reply with your DigitalOcean API token
+5. Use `/menu` to see all options!
 
-## 📝 Bot Commands
+**Now you can:**
+- 📋 List droplets
+- 🚀 Create new droplets with OS/Apps/Snapshots
+- 🔍 Search through 200+ images
+- 🔄 Rebuild existing droplets
+- 🗑️ Delete droplets
 
-| Command | Description |
-|---------|-------------|
-| `/start` | Show welcome message and available commands |
-| `/setapi` | Configure or change your DigitalOcean API token |
-| `/droplets` | List all your droplets with interactive buttons |
-| `/create` | Start the interactive droplet creation wizard |
+## 📚 User Guide
 
-## 🔄 Development Workflow
+### Creating a Droplet
+
+1. Send `/create` or use Menu button → "Create Droplet"
+2. **Select Region** - Choose datacenter location
+3. **Choose Image Type**:
+   - 🐧 **Operating Systems** - Ubuntu, Debian, CentOS, Fedora, etc.
+   - 📦 **Applications** - Docker, WordPress, LAMP, etc.
+   - 📸 **My Snapshots** - Your custom images
+4. **Browse or Search**:
+   - Use pagination (◀️ Previous / Next ▶️)
+   - Or tap 🔍 Search and type keywords (min 3 chars)
+5. **Select Image** - Tap the image you want
+6. **Choose Size** - Pick specs and pricing
+7. **Name Your Droplet**:
+   - ✅ Use Default (auto-generated)
+   - 📝 Rename (custom name)
+8. **Confirm** - Review and create!
+
+Your droplet will be ready in ~60 seconds!
+
+### Rebuilding a Droplet
+
+1. Send `/droplets`
+2. Select the droplet to rebuild
+3. Tap 🔄 **Rebuild**
+4. Choose new OS/App/Snapshot
+5. Search or browse (same as creation)
+6. **Confirm** - Review and rebuild
+
+⚠️ **Warning**: All data will be deleted! IP address stays the same.
+
+### Managing Cache
+
+The bot caches OS and Application images for **24 hours** to improve performance.
+
+**When to clear cache:**
+- After DigitalOcean adds new OS versions
+- If you see outdated image lists
+- To force refresh all data
+
+**How to clear:**
+Send `/clearcache`
+
+Snapshots are **never cached** (always fresh data).
+
+## 🔧 Development
 
 ### Local Development
 
 ```bash
-# Run the bot locally (for testing)
-npx wrangler dev
+# Run locally with remote mode (needed for Telegram webhooks)
+npx wrangler dev --remote
 ```
-
-**Note:** For local testing with Telegram webhooks, you'll need to:
-1. Use `npx wrangler dev --remote` to get a public URL, or
-2. Use a tunneling service like [ngrok](https://ngrok.com/) to expose your local server
 
 ### Testing
 
 ```bash
-# Run tests
 npm test
 ```
 
 ### Viewing Logs
 
 ```bash
-# Stream real-time logs
+# Real-time logs
 npx wrangler tail
 
-# View logs with filtering
+# Filter by level
 npx wrangler tail --status error
 ```
 
-### Updating Secrets
+### Updating
 
 ```bash
-# Update Telegram Bot Token
-npx wrangler secret put TELEGRAM_BOT_TOKEN
-
-# Update Allowed User IDs
-npx wrangler secret put ALLOWED_USER_IDS
-
-# List all secrets (doesn't show values)
-npx wrangler secret list
-
-# Delete a secret
-npx wrangler secret delete SECRET_NAME
-```
-
-### Deploying Updates
-
-```bash
-# After making code changes
+# After code changes
 git add .
-git commit -m "Your commit message"
-git push origin main
+git commit -m "Your changes"
+git push
 
-# Deploy to Cloudflare
+# Deploy
 npx wrangler deploy
 ```
 
-## 🛠️ Configuration
+## 🛡️ Configuration
 
 ### Required Secrets
 
 | Secret | Description | Example |
-|--------|-------------|---------|
-| `TELEGRAM_BOT_TOKEN` | Bot token from @BotFather | `1234567890:ABCdef...` |
-| `ALLOWED_USER_IDS` | Comma-separated Telegram user IDs | `123456789` or `123,456,789` |
+|--------|-------------|---------||
+| `TELEGRAM_BOT_TOKEN` | Bot token from @BotFather | `1234567890:ABC...` |
+| `ALLOWED_USER_IDS` | Comma-separated user IDs | `123456789,987654321` |
 
 ### KV Namespace
 
 | Binding | Purpose |
-|---------|---------|
-| `DROPLET_CREATION` | Stores user API tokens and temporary session data |
+|---------|---------||
+| `DROPLET_CREATION` | User API tokens, sessions, cache |
 
-### Customizable Settings (wrangler.jsonc)
+**Data stored:**
+- User API tokens (permanent)
+- Session data (10 min TTL)
+- Image cache (24 hour TTL)
+- Search states (10 min TTL)
 
-| Setting | Description | Example |
-|---------|-------------|---------||
-| `name` | Worker name (determines your bot's subdomain) | `my-do-bot` |
-| `kv_namespaces[].id` | Your KV namespace ID (from `wrangler kv namespace create`) | `abc123xyz456...` |
-
-### Per-User Configuration
-
-Each user must configure their own DigitalOcean API token using the `/setapi` command in Telegram. This approach:
-- Allows multiple users with different DigitalOcean accounts
-- Keeps credentials isolated per user
-- Stores tokens securely in Cloudflare KV
-- Validates tokens before saving
-
-## 📁 Project Structure
+## 📚 Architecture
 
 ```
-DigitalOcean-Bot/
-├── src/
-│   └── index.js          # Main bot logic and webhook handler
-├── test/
-│   └── index.spec.js     # Unit tests
-├── .editorconfig         # Editor configuration
-├── .gitignore            # Git ignore rules
-├── .prettierrc           # Code formatter settings
-├── package.json          # Project dependencies
-├── vitest.config.js      # Test configuration
-├── wrangler.jsonc        # Cloudflare Workers configuration
-└── README.md             # This file
+┌─────────────────┐
+│  Telegram User  │
+└───────┬────────┘
+        │
+        │ Webhook (HTTPS)
+        │
+┌───────┴──────────────────────────┐
+│  Cloudflare Workers (Edge)    │
+│  - Handle messages/callbacks  │
+│  - State management           │
+│  - Caching logic              │
+└─────┬──────────┬──────────────┘
+      │            │
+      │            │
+┌─────┴─────┐  ┌───┴───────────────────┐
+│  KV Store  │  │  DigitalOcean API  │
+│  - Tokens  │  │  - Droplets        │
+│  - Cache   │  │  - Images          │
+│  - State   │  │  - Regions/Sizes   │
+└───────────┘  └─────────────────────┘
 ```
+
+**Workflow:**
+1. User sends message → Telegram webhook → Worker
+2. Worker checks KV for user's API token
+3. Worker calls DigitalOcean API (with caching)
+4. Worker processes response
+5. Worker sends formatted message back to Telegram
 
 ## 🐛 Troubleshooting
 
-### Bot doesn't respond to messages
+### Bot doesn't respond
 
-**Solution:**
-1. Verify webhook registration: Visit `https://your-worker.workers.dev/registerWebhook`
-2. Check secrets are configured: `npx wrangler secret list`
-3. View logs for errors: `npx wrangler tail`
+**Check:**
+1. Webhook registered? Visit `/registerWebhook`
+2. Secrets configured? Run `npx wrangler secret list`
+3. Check logs: `npx wrangler tail`
 
-### "Access denied" message
+### "Access denied"
 
-**Cause:** Your Telegram User ID is not in the allowed list.
+**Fix:** Add your User ID to `ALLOWED_USER_IDS`:
+```bash
+npx wrangler secret put ALLOWED_USER_IDS
+# Enter: 123456789
+```
 
-**Solution:**
-1. Get your User ID from [@userinfobot](https://t.me/userinfobot)
-2. Update the secret: `npx wrangler secret put ALLOWED_USER_IDS`
-3. Enter your User ID (for multiple users: `123,456,789`)
+### "No API token found"
 
-### "No API token found" message
+**Fix:** Configure your token:
+1. Send `/setapi`
+2. Reply with DigitalOcean API token
 
-**Cause:** You haven't configured your DigitalOcean API token yet.
+### "Invalid API token"
 
-**Solution:**
-1. Send `/setapi` to the bot
-2. Reply with your DigitalOcean API token
-3. Wait for confirmation
+**Reasons:**
+- Token doesn't have Read + Write permissions
+- Token is expired or revoked
 
-### "Invalid API token" error
+**Fix:** Generate new token with both scopes, use `/setapi`
 
-**Cause:** The DigitalOcean API token is invalid or has insufficient permissions.
+### "No SSH Keys Found"
 
-**Solution:**
-1. Verify your token in [DigitalOcean Console](https://cloud.digitalocean.com/)
-2. Ensure it has both **Read** and **Write** permissions
-3. Generate a new token if needed
-4. Use `/setapi` to configure the new token
+**Fix:** Add SSH key to DigitalOcean (see Step 3.1)
 
-### "No SSH Keys Found" error
+### Commands don't autocomplete
 
-**Cause:** Your DigitalOcean account has no SSH keys added.
+**Fix:** Re-register webhook:
+```
+https://your-worker.workers.dev/registerWebhook
+```
 
-**Solution:**
-1. Follow [Step 3.1](#31-add-ssh-key-required) to add an SSH key
-2. Try creating a droplet again
+Must see: `"commands": "registered"`
 
-### Droplet creation fails
+### Menu button doesn't appear
 
-**Common causes:**
-- Invalid API token permissions
-- Selected region/size unavailable
-- No billing method configured in DigitalOcean
-- SSH key missing
+**Fix:**
+1. Re-register webhook (above)
+2. Restart Telegram app
+3. Clear Telegram cache: Settings → Data and Storage → Clear Cache
 
-**Solution:**
-1. Check API token has Read & Write access
-2. Try a different region or size
-3. Ensure billing is set up in DigitalOcean
-4. Verify at least one SSH key exists
-5. Check logs: `npx wrangler tail`
+### Search not working
 
-### KV namespace binding error
+**Minimum 3 characters** required. If still fails:
+1. Check image type has available images
+2. Try different search terms
+3. Use pagination instead
 
-**Error:** `KV namespace DROPLET_CREATION not found`
+### Cache issues
 
-**Solution:**
-1. Verify you created your own KV namespace: `npx wrangler kv namespace create "DROPLET_CREATION"`
-2. Make sure you updated the `id` field in `wrangler.jsonc` with YOUR namespace ID (not the one from the repository)
-3. Run: `npx wrangler kv namespace list` to see all your namespaces
-4. Update the `id` field in `wrangler.jsonc` if needed
-5. Redeploy: `npx wrangler deploy`
+**Symptoms:**
+- Outdated image lists
+- New snapshots not appearing
 
-### Worker name already exists
-
-**Error:** `A worker with this name already exists`
-
-**Solution:**
-1. Open `wrangler.jsonc`
-2. Change the `name` field to something unique (e.g., `my-do-bot-v2`)
-3. Try deploying again: `npx wrangler deploy`
+**Fix:** Send `/clearcache` to force refresh
 
 ## 🔒 Security Best Practices
 
-1. **Never commit secrets to Git** - Always use `wrangler secret put`
-2. **Limit user access** - Only add trusted Telegram User IDs to `ALLOWED_USER_IDS`
-3. **Use SSH keys only** - Droplets are created without password authentication
-4. **Rotate API tokens periodically** - Use `/setapi` to update your token
-5. **Monitor bot activity** - Regularly check logs with `wrangler tail`
-6. **Keep dependencies updated** - Run `npm update` and redeploy regularly
-7. **Use unique worker names** - Customize the worker name to avoid conflicts
+1. **Never commit secrets** - Use `wrangler secret put`
+2. **Limit user access** - Only trusted User IDs in whitelist
+3. **Use SSH keys** - No password authentication
+4. **Rotate tokens** - Change API tokens periodically
+5. **Monitor logs** - Check `wrangler tail` regularly
+6. **Update dependencies** - Run `npm update` monthly
+7. **Unique worker names** - Avoid name conflicts
+
+## ❓ FAQ
+
+### Q: Can multiple users use the same bot?
+**A:** Yes! Each user sets their own API token with `/setapi`. Add all user IDs to `ALLOWED_USER_IDS`.
+
+### Q: Is my API token secure?
+**A:** Yes. Stored encrypted in Cloudflare KV, never logged or exposed.
+
+### Q: Does this cost money?
+**A:** 
+- **Cloudflare Workers:** Free tier includes 100,000 requests/day
+- **KV Storage:** Free tier includes 1GB storage
+- **DigitalOcean:** You pay only for droplets you create
+
+### Q: How many images can the bot handle?
+**A:** All of them! Bot fetches and caches all 200+ OS/App images. Pagination handles unlimited results.
+
+### Q: Can I use this for production?
+**A:** Absolutely! Built on Cloudflare's production-grade infrastructure.
+
+### Q: What if DigitalOcean API is down?
+**A:** Bot will show error messages. Check [DigitalOcean Status](https://status.digitalocean.com/).
+
+### Q: Can I customize the bot?
+**A:** Yes! Fork the repo, modify `src/index.js`, and deploy your version.
+
+### Q: Do I need Premium Telegram?
+**A:** No! All features work on free Telegram accounts.
 
 ## 🤝 Contributing
 
-Contributions are welcome! Here's how to contribute:
+Contributions welcome!
 
 1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/amazing-feature`
-3. Make your changes
-4. Test thoroughly: `npm test`
-5. Commit your changes: `git commit -m 'Add amazing feature'`
-6. Push to your fork: `git push origin feature/amazing-feature`
-7. Open a Pull Request
+2. Create feature branch: `git checkout -b feature/amazing`
+3. Make changes
+4. Test: `npm test`
+5. Commit: `git commit -m 'Add amazing feature'`
+6. Push: `git push origin feature/amazing`
+7. Open Pull Request
 
-## 📄 License
+## 📝 Changelog
 
-This project is open source and available under the [MIT License](LICENSE).
+### v2.0.0 (Latest)
+- ✨ Added Menu Button next to message input
+- 🔍 Added slash command autocomplete
+- 🔍 Added search functionality (OS/Apps/Snapshots)
+- 📚 Added pagination for 200+ images
+- 🔄 Added rebuild droplet feature
+- 📏 Smart caching system (24h TTL)
+- ❔ Added `/help` command
+- 🗑️ Added `/clearcache` command
+- 🐛 Fixed session management
+- ⚡ Performance improvements
+
+### v1.0.0
+- 🎉 Initial release
+- ✅ Create/delete droplets
+- 📋 List droplets
+- 🔐 Per-user API tokens
+
+## 📜 License
+
+MIT License - See [LICENSE](LICENSE)
 
 ## 🙏 Acknowledgments
 
 - [Cloudflare Workers](https://workers.cloudflare.com/) - Serverless platform
-- [DigitalOcean API](https://docs.digitalocean.com/reference/api/) - Cloud infrastructure API
+- [DigitalOcean API](https://docs.digitalocean.com/reference/api/) - Cloud infrastructure
 - [Telegram Bot API](https://core.telegram.org/bots/api) - Bot framework
 
-## 📞 Support
+## 📦 Support
 
 - **Issues**: [GitHub Issues](https://github.com/ali934h/DigitalOcean-Bot/issues)
 - **Telegram**: [@ali934h](https://t.me/ali934h)
