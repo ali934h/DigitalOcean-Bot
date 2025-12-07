@@ -10,6 +10,7 @@
  * - Correct type filtering (base, application, snapshot)
  * - Improved UX for rename with force_reply button
  * - Fixed variable naming conflict in rename handler
+ * - Fixed session expired by using state for sessionId
  * 
  * FLOW:
  * Create: Region → [OS | Apps | Snapshots] → Size (filtered) → Name → Confirm
@@ -277,16 +278,21 @@ async function handleMessage(message, env) {
 			return;
 		}
 		
-		// Droplet rename reply (NEW - Improved UX)
+		// Droplet rename reply (FIXED - Using state instead of parsing message)
 		if (replyText.includes('📝 Rename Droplet')) {
-			const lines = replyText.split('\n');
-			const sessionLine = lines.find(l => l.startsWith('Session:'));
-			if (!sessionLine) return;
-			const sessionId = sessionLine.split(':')[1].trim();
+			// Get sessionId from state (not from message text!)
+			const state = await getState(chatId, env);
+			if (!state || state.step !== 'renaming_droplet' || !state.sessionId) {
+				await sendMessage(chatId, '❌ Session expired. Please try again.', env);
+				return;
+			}
+			
+			const sessionId = state.sessionId;
 			
 			// Get session data
 			const dataStr = await env.DROPLET_CREATION.get(sessionId);
 			if (!dataStr) {
+				await clearState(chatId, env);
 				await sendMessage(chatId, '❌ Session expired.', env);
 				return;
 			}
@@ -297,6 +303,7 @@ async function handleMessage(message, env) {
 			
 			// Parse data and confirm
 			const data = JSON.parse(dataStr);
+			await clearState(chatId, env);
 			await confirmDropletCreation(chatId, text.trim(), data.region, data.size, data.image, env);
 			return;
 		}
@@ -428,7 +435,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 		await deleteMessage(chatId, messageId, env);
 		await useDefaultNameAndConfirm(chatId, sessionId, env);
 	}
-	// Rename droplet (FIXED - No variable conflict)
+	// Rename droplet (FIXED - Store sessionId in state!)
 	else if (data.startsWith('rename_droplet_')) {
 		const sessionId = data.replace('rename_droplet_', '');
 		
@@ -439,11 +446,14 @@ async function handleCallbackQuery(callbackQuery, env) {
 			return;
 		}
 		
-		const sessionData = JSON.parse(dataStr);  // FIXED: Changed from 'data' to 'sessionData'
+		const sessionData = JSON.parse(dataStr);
 		await deleteMessage(chatId, messageId, env);
 		
-		// Send message with force_reply (like /setapi)
-		const text = `📝 *Rename Droplet*\n\nRegion: ${sessionData.region}\nSize: ${sessionData.size}\nImage ID: ${sessionData.image}\n\nSession: ${sessionId}\n\nReply to this message with your desired droplet name:`;
+		// Save sessionId to state (FIXED!)
+		await setState(chatId, { step: 'renaming_droplet', sessionId: sessionId }, env);
+		
+		// Send message with force_reply (cleaner without showing sessionId)
+		const text = `📝 *Rename Droplet*\n\nRegion: ${sessionData.region}\nSize: ${sessionData.size}\nImage: ${sessionData.image}\n\nReply with your desired droplet name:`;
 		const keyboard = { force_reply: true, selective: true };
 		await sendMessage(chatId, text, env, keyboard);
 	}
