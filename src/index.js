@@ -8,6 +8,7 @@
  * - Fixed search lockup (clearState + Back button)
  * - Added Back buttons in all steps
  * - Correct type filtering (base, application, snapshot)
+ * - Improved UX for rename with force_reply button
  * 
  * FLOW:
  * Create: Region → [OS | Apps | Snapshots] → Size (filtered) → Name → Confirm
@@ -254,10 +255,11 @@ async function handleMessage(message, env) {
 		return;
 	}
 
-	// Check for API token reply
+	// Check for reply messages
 	if (message.reply_to_message) {
 		const replyText = message.reply_to_message.text || '';
 		
+		// API Token reply
 		if (replyText.includes('API Token') || replyText.includes('API token')) {
 			await deleteMessage(chatId, message.reply_to_message.message_id, env);
 			await deleteMessage(chatId, message.message_id, env);
@@ -274,16 +276,27 @@ async function handleMessage(message, env) {
 			return;
 		}
 		
-		// Detect droplet name reply
-		if (replyText.includes('Default:')) {
+		// Droplet rename reply (NEW - Improved UX)
+		if (replyText.includes('📝 Rename Droplet')) {
 			const lines = replyText.split('\n');
-			const region = lines.find(l => l.startsWith('Region:'))?.split(':')[1].trim();
-			const size = lines.find(l => l.startsWith('Size:'))?.split(':')[1].trim();
-			const imageIdLine = lines.find(l => l.startsWith('Image ID:'));
-			if (!imageIdLine) return;
-			const imageId = imageIdLine.split(':')[1].trim();
+			const sessionLine = lines.find(l => l.startsWith('Session:'));
+			if (!sessionLine) return;
+			const sessionId = sessionLine.split(':')[1].trim();
+			
+			// Get session data
+			const dataStr = await env.DROPLET_CREATION.get(sessionId);
+			if (!dataStr) {
+				await sendMessage(chatId, '❌ Session expired.', env);
+				return;
+			}
+			
+			// Delete messages for clean UX
 			await deleteMessage(chatId, message.reply_to_message.message_id, env);
-			await confirmDropletCreation(chatId, text, region, size, imageId, env);
+			await deleteMessage(chatId, message.message_id, env);
+			
+			// Parse data and confirm
+			const data = JSON.parse(dataStr);
+			await confirmDropletCreation(chatId, text.trim(), data.region, data.size, data.image, env);
 			return;
 		}
 	}
@@ -378,7 +391,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 		await sendMessage(chatId, `🔍 *Search ${type === 'app' ? 'Applications' : type === 'os' ? 'OS' : 'Snapshots'}*\n\nType at least ${MIN_SEARCH_LENGTH} characters:`, env);
 		await setState(chatId, { step: 'searching_image', region: region, type: type }, env);
 	}
-	// Back from search (NEW)
+	// Back from search
 	else if (data.startsWith('back_from_search_')) {
 		const parts = data.replace('back_from_search_', '').split('_');
 		const region = parts[0];
@@ -408,11 +421,30 @@ async function handleCallbackQuery(callbackQuery, env) {
 		await deleteMessage(chatId, messageId, env);
 		await askDropletName(chatId, imageId, size, region, env);
 	}
-	// Droplet name
+	// Use default name
 	else if (data.startsWith('use_default_name_')) {
 		const sessionId = data.replace('use_default_name_', '');
 		await deleteMessage(chatId, messageId, env);
 		await useDefaultNameAndConfirm(chatId, sessionId, env);
+	}
+	// Rename droplet (NEW - Improved UX)
+	else if (data.startsWith('rename_droplet_')) {
+		const sessionId = data.replace('rename_droplet_', '');
+		
+		// Get session data to show in reply message
+		const dataStr = await env.DROPLET_CREATION.get(sessionId);
+		if (!dataStr) {
+			await editMessage(chatId, messageId, '❌ Session expired.', env);
+			return;
+		}
+		
+		const data = JSON.parse(dataStr);
+		await deleteMessage(chatId, messageId, env);
+		
+		// Send message with force_reply (like /setapi)
+		const text = `📝 *Rename Droplet*\n\nRegion: ${data.region}\nSize: ${data.size}\nImage ID: ${data.image}\n\nSession: ${sessionId}\n\nReply to this message with your desired droplet name:`;
+		const keyboard = { force_reply: true, selective: true };
+		await sendMessage(chatId, text, env, keyboard);
 	}
 	// Confirm creation
 	else if (data.startsWith('confirmcreate_')) {
@@ -459,7 +491,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 		await sendMessage(chatId, `🔍 *Search ${type === 'app' ? 'Applications' : type === 'os' ? 'OS' : 'Snapshots'}*\n\nType at least ${MIN_SEARCH_LENGTH} characters:`, env);
 		await setState(chatId, { step: 'rebuild_searching_image', dropletId: dropletId, type: type }, env);
 	}
-	// Back from rebuild search (NEW)
+	// Back from rebuild search
 	else if (data.startsWith('back_from_rebuild_search_')) {
 		const dropletId = data.replace('back_from_rebuild_search_', '');
 		await clearState(chatId, env);
@@ -637,7 +669,7 @@ async function showImagesListEdit(chatId, messageId, region, type, page, env) {
 	await editMessage(chatId, messageId, text, env, { inline_keyboard: keyboard });
 }
 
-// === IMAGE SEARCH (FIXED) ===
+// === IMAGE SEARCH ===
 
 async function handleImageSearch(chatId, query, state, env) {
 	if (query.length < MIN_SEARCH_LENGTH) {
@@ -653,7 +685,6 @@ async function handleImageSearch(chatId, query, state, env) {
 	const results = allImages.filter(img => img.name.toLowerCase().includes(searchTerm));
 	
 	if (results.length === 0) {
-		// FIXED: Clear state and provide back button
 		await clearState(chatId, env);
 		const keyboard = {
 			inline_keyboard: [[{ text: '◀️ Back to Menu', callback_data: `back_from_search_${state.region}` }]]
@@ -741,16 +772,21 @@ function generateDropletName(imageId, size, region) {
 	return `droplet-${size}-${region}-${timestamp}`;
 }
 
+// IMPROVED: Added Rename button with better UX
 async function askDropletName(chatId, imageId, size, region, env) {
 	const defaultName = generateDropletName(imageId, size, region);
 	const sessionId = `session_${chatId}_${Date.now()}`;
 	await env.DROPLET_CREATION.put(sessionId, JSON.stringify({
 		region, size, image: imageId, defaultName
 	}), { expirationTtl: 300 });
-	const text = `📝 *Droplet Name*\n\nRegion: ${region}\nSize: ${size}\nImage ID: ${imageId}\n\nDefault: \`${defaultName}\`\n\nReply to change name.`;
+	
+	const text = `📝 *Droplet Name*\n\nRegion: ${region}\nSize: ${size}\nImage ID: ${imageId}\n\nDefault: \`${defaultName}\``;
 	const keyboard = {
 		inline_keyboard: [
-			[{ text: '✅ Use Default', callback_data: `use_default_name_${sessionId}` }],
+			[
+				{ text: '✅ Use Default', callback_data: `use_default_name_${sessionId}` },
+				{ text: '📝 Rename', callback_data: `rename_droplet_${sessionId}` }
+			],
 			[{ text: '◀️ Back', callback_data: 'back_to_regions' }],
 		]
 	};
@@ -896,7 +932,7 @@ async function editMessageToDropletList(chatId, messageId, env) {
 	await editMessage(chatId, messageId, 'Your Droplets:', env, { inline_keyboard: keyboard });
 }
 
-// === REBUILD (FIXED) ===
+// === REBUILD ===
 
 async function showRebuildImageTypeSelection(chatId, messageId, dropletId, env) {
 	const keyboard = {
@@ -983,7 +1019,6 @@ async function handleRebuildImageSearch(chatId, query, state, env) {
 	const results = allImages.filter(img => img.name.toLowerCase().includes(searchTerm));
 	
 	if (results.length === 0) {
-		// FIXED: Clear state and provide back button
 		await clearState(chatId, env);
 		const keyboard = {
 			inline_keyboard: [[{ text: '◀️ Back to Menu', callback_data: `back_from_rebuild_search_${dropletId}` }]]
