@@ -117,7 +117,7 @@ async function getImagesByType(type, apiToken, env) {
 
 		// For OS and Apps, get from all images and filter
 		const allImages = await getAllImages(apiToken, env);
-		const typeFilter = type === 'os' ? 'base' : type;
+		const typeFilter = type === 'os' ? 'base' : type === 'app' ? 'application' : type;
 		return allImages.filter(img => img.type === typeFilter && img.status === 'available');
 	} catch (error) {
 		console.error(`Error getting ${type} images:`, error);
