@@ -9,6 +9,7 @@
  * - Added Back buttons in all steps
  * - Correct type filtering (base, application, snapshot)
  * - Improved UX for rename with force_reply button
+ * - Fixed variable naming conflict in rename handler
  * 
  * FLOW:
  * Create: Region → [OS | Apps | Snapshots] → Size (filtered) → Name → Confirm
@@ -427,7 +428,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 		await deleteMessage(chatId, messageId, env);
 		await useDefaultNameAndConfirm(chatId, sessionId, env);
 	}
-	// Rename droplet (NEW - Improved UX)
+	// Rename droplet (FIXED - No variable conflict)
 	else if (data.startsWith('rename_droplet_')) {
 		const sessionId = data.replace('rename_droplet_', '');
 		
@@ -438,11 +439,11 @@ async function handleCallbackQuery(callbackQuery, env) {
 			return;
 		}
 		
-		const data = JSON.parse(dataStr);
+		const sessionData = JSON.parse(dataStr);  // FIXED: Changed from 'data' to 'sessionData'
 		await deleteMessage(chatId, messageId, env);
 		
 		// Send message with force_reply (like /setapi)
-		const text = `📝 *Rename Droplet*\n\nRegion: ${data.region}\nSize: ${data.size}\nImage ID: ${data.image}\n\nSession: ${sessionId}\n\nReply to this message with your desired droplet name:`;
+		const text = `📝 *Rename Droplet*\n\nRegion: ${sessionData.region}\nSize: ${sessionData.size}\nImage ID: ${sessionData.image}\n\nSession: ${sessionId}\n\nReply to this message with your desired droplet name:`;
 		const keyboard = { force_reply: true, selective: true };
 		await sendMessage(chatId, text, env, keyboard);
 	}
