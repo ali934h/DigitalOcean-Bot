@@ -1,22 +1,21 @@
 /**
- * DigitalOcean Telegram Bot - Optimized Flow Version
+ * DigitalOcean Telegram Bot - Images API Version
  * 
- * NEW FLOW:
- * /create → Region → OS/App → Size (filtered)
+ * NEW FEATURES:
+ * - Uses /v2/images API (applications, base OS, snapshots)
+ * - No hardcoded apps - all data from API
+ * - Pagination (20 items per page)
+ * - Search functionality (min 3 chars)
+ * - Smart filtering by region and min_disk_size
  * 
- * Rebuild: Shows OS/Apps compatible with current droplet size
- * 
- * Features:
- * - /start: Welcome message
- * - /setapi: Configure DigitalOcean API token
- * - /droplets: List and manage droplets
- * - /create: Region-first creation flow
- * - /clearcache: Clear all cache data (keeps API token)
- * - Rebuild: Smart filtering based on droplet specs
- * - SSH key management
+ * FLOW:
+ * Create: Region → [OS | Apps | Snapshots] → Size (filtered) → Name → Confirm
+ * Rebuild: [OS | Apps | Snapshots] → Confirm (filtered by droplet specs)
  */
 
-import { POPULAR_APP_KEYWORDS, APP_DISPLAY_NAMES } from './config.js';
+const ITEMS_PER_PAGE = 20;
+const MIN_SEARCH_LENGTH = 3;
+const CACHE_TTL_IMAGES = 86400; // 24 hours for images
 
 export default {
 	async fetch(request, env) {
@@ -61,40 +60,44 @@ async function doApiCall(endpoint, method, apiToken, body = null) {
 	return await response.json();
 }
 
-// Get image details including min_disk_size
-async function getImageDetails(imageSlug, apiToken, env) {
+// Get all images by type (application, base, snapshot)
+async function getImagesByType(type, apiToken, env) {
 	try {
-		const cached = await env.DROPLET_CREATION.get(`image_${imageSlug}`);
+		const cacheKey = `images_${type}`;
+		const cached = await env.DROPLET_CREATION.get(cacheKey);
 		if (cached) return JSON.parse(cached);
 
-		const apps = await getMarketplaceApps(env, apiToken);
-		const app = apps.find(a => a.slug === imageSlug);
+		const data = await doApiCall(`/images?type=${type}&per_page=200`, 'GET', apiToken);
+		const images = data.images || [];
 		
-		if (app) {
-			const imageData = await doApiCall(`/images/${app.slug}`, 'GET', apiToken);
-			const details = {
-				slug: app.slug,
-				min_disk_size: imageData.image?.min_disk_size || 25,
-				min_memory: 1024,
-				type: 'app'
-			};
-			await env.DROPLET_CREATION.put(`image_${imageSlug}`, JSON.stringify(details), { expirationTtl: 3600 });
-			return details;
-		} else {
-			const imageData = await doApiCall(`/images/${imageSlug}`, 'GET', apiToken);
-			const details = {
-				slug: imageSlug,
-				min_disk_size: imageData.image?.min_disk_size || 10,
-				min_memory: 512,
-				type: 'os'
-			};
-			await env.DROPLET_CREATION.put(`image_${imageSlug}`, JSON.stringify(details), { expirationTtl: 3600 });
-			return details;
-		}
+		// Cache for 24 hours
+		await env.DROPLET_CREATION.put(cacheKey, JSON.stringify(images), { expirationTtl: CACHE_TTL_IMAGES });
+		return images;
 	} catch (error) {
-		console.error('Error getting image details:', error);
-		return { slug: imageSlug, min_disk_size: 25, min_memory: 1024, type: 'unknown' };
+		console.error(`Error getting ${type} images:`, error);
+		return [];
 	}
+}
+
+// Filter images by region
+function filterImagesByRegion(images, region) {
+	return images.filter(img => {
+		if (!img.regions || img.regions.length === 0) return true; // Public images
+		return img.regions.includes(region);
+	});
+}
+
+// Filter images compatible with droplet specs
+function filterImagesForRebuild(images, droplet) {
+	return images.filter(img => {
+		if (img.status !== 'available') return false;
+		if (img.min_disk_size > droplet.disk) return false;
+		// Check region compatibility
+		if (img.regions && img.regions.length > 0 && !img.regions.includes(droplet.region.slug)) {
+			return false;
+		}
+		return true;
+	});
 }
 
 // === TOKEN MANAGEMENT ===
@@ -126,29 +129,23 @@ async function getUserApiToken(userId, env) {
 
 async function clearUserSessions(userId, env) {
 	try {
-		const listResult = await env.DROPLET_CREATION.list({ prefix: `session_${userId}_` });
-		const createListResult = await env.DROPLET_CREATION.list({ prefix: `create_${userId}_` });
-		const stateResult = await env.DROPLET_CREATION.list({ prefix: `state_${userId}` });
-		const rebuildResult = await env.DROPLET_CREATION.list({ prefix: `rebuild_${userId}_` });
-		const allKeys = [
-			...listResult.keys.map(k => k.name), 
-			...createListResult.keys.map(k => k.name),
-			...stateResult.keys.map(k => k.name),
-			...rebuildResult.keys.map(k => k.name)
-		];
-		for (const key of allKeys) {
-			await env.DROPLET_CREATION.delete(key);
+		const prefixes = [`session_${userId}_`, `create_${userId}_`, `state_${userId}`, `rebuild_${userId}_`, `page_${userId}_`];
+		for (const prefix of prefixes) {
+			const listResult = await env.DROPLET_CREATION.list({ prefix: prefix });
+			for (const key of listResult.keys) {
+				await env.DROPLET_CREATION.delete(key.name);
+			}
 		}
 	} catch (error) {
 		console.error('Error clearing sessions:', error);
 	}
 }
 
-// Clear all cache data (images, apps) but keep API tokens
+// Clear all cache data (images) but keep API tokens
 async function clearAllCache(env) {
 	try {
 		let deletedCount = 0;
-		const prefixes = ['image_', 'marketplace_apps'];
+		const prefixes = ['images_'];
 		
 		for (const prefix of prefixes) {
 			const listResult = await env.DROPLET_CREATION.list({ prefix: prefix });
@@ -163,32 +160,6 @@ async function clearAllCache(env) {
 		console.error('Error clearing cache:', error);
 		return 0;
 	}
-}
-
-// === MARKETPLACE APPS ===
-
-async function getMarketplaceApps(env, apiToken) {
-	const cached = await env.DROPLET_CREATION.get('marketplace_apps');
-	if (cached) return JSON.parse(cached);
-	const data = await doApiCall('/1-clicks?type=droplet', 'GET', apiToken);
-	const apps = data['1_clicks'];
-	await env.DROPLET_CREATION.put('marketplace_apps', JSON.stringify(apps), { expirationTtl: 3600 });
-	return apps;
-}
-
-async function getPopularApps(env, apiToken) {
-	const allApps = await getMarketplaceApps(env, apiToken);
-	const popularApps = [];
-	POPULAR_APP_KEYWORDS.forEach(keyword => {
-		const match = allApps.find(app => app.slug.toLowerCase().includes(keyword.toLowerCase()));
-		if (match) {
-			popularApps.push({
-				slug: match.slug,
-				name: APP_DISPLAY_NAMES[match.slug] || match.slug
-			});
-		}
-	});
-	return popularApps;
 }
 
 // === TELEGRAM HELPERS ===
@@ -238,12 +209,11 @@ async function handleMessage(message, env) {
 		return;
 	}
 
-	// Check for API token reply (improved detection)
+	// Check for API token reply
 	if (message.reply_to_message) {
 		const replyText = message.reply_to_message.text || '';
 		
-		// Detect /setapi reply
-		if (replyText.includes('API Token') || replyText.includes('API token') || replyText.includes('DigitalOcean API token')) {
+		if (replyText.includes('API Token') || replyText.includes('API token')) {
 			await deleteMessage(chatId, message.reply_to_message.message_id, env);
 			await deleteMessage(chatId, message.message_id, env);
 			const validatingMsg = await sendMessage(chatId, '⏳ Validating your API token...', env);
@@ -274,21 +244,18 @@ async function handleMessage(message, env) {
 	// Check state for search modes
 	const state = await getState(chatId, env);
 	
-	// Handle app search for create flow
-	if (state?.step === 'searching_app') {
-		await handleAppSearch(chatId, text, state.region, env);
+	if (state?.step === 'searching_image') {
+		await handleImageSearch(chatId, text, state, env);
 		return;
 	}
 	
-	// Handle app search for rebuild flow
-	if (state?.step === 'rebuild_search_app') {
-		await handleRebuildAppSearch(chatId, text, state.dropletId, env);
+	if (state?.step === 'rebuild_searching_image') {
+		await handleRebuildImageSearch(chatId, text, state.dropletId, env);
 		return;
 	}
 
-	// Commands (always work regardless of state)
+	// Commands
 	if (text === '/start') {
-		// Clear any stuck state
 		await clearState(chatId, env);
 		const hasApiToken = await getUserApiToken(chatId, env);
 		const welcomeMsg = hasApiToken
@@ -296,7 +263,6 @@ async function handleMessage(message, env) {
 			: '👋 Welcome!\n\n⚠️ Set your API token first with /setapi';
 		await sendMessage(chatId, welcomeMsg, env);
 	} else if (text === '/setapi') {
-		// Clear any stuck state
 		await clearState(chatId, env);
 		const hasExisting = await getUserApiToken(chatId, env);
 		const tokenText = hasExisting
@@ -305,15 +271,12 @@ async function handleMessage(message, env) {
 		const keyboard = { force_reply: true, selective: true };
 		await sendMessage(chatId, tokenText, env, keyboard);
 	} else if (text === '/droplets') {
-		// Clear any stuck state
 		await clearState(chatId, env);
 		await listDroplets(chatId, env);
 	} else if (text === '/create') {
-		// Clear any stuck state
 		await clearState(chatId, env);
 		await showRegions(chatId, env);
 	} else if (text === '/clearcache') {
-		// Clear any stuck state
 		await clearState(chatId, env);
 		const msg = await sendMessage(chatId, '⏳ Clearing cache...', env);
 		const count = await clearAllCache(env);
@@ -347,53 +310,48 @@ async function handleCallbackQuery(callbackQuery, env) {
 	else if (data.startsWith('imgtype_')) {
 		const parts = data.replace('imgtype_', '').split('_');
 		const region = parts[0];
-		const type = parts[1];
-		if (type === 'os') {
-			await deleteMessage(chatId, messageId, env);
-			await showOSImages(chatId, region, env);
-		} else if (type === 'app') {
-			const keyboard = {
-				inline_keyboard: [
-					[{ text: '🔍 Search Apps', callback_data: `appmenu_${region}_search` }],
-					[{ text: '⭐ Popular Apps', callback_data: `appmenu_${region}_popular` }],
-					[{ text: '◀️ Back', callback_data: 'back_to_regions' }],
-				]
-			};
-			await editMessage(chatId, messageId, '📦 *1-Click Apps*\n\nChoose option:', env, keyboard);
-		}
+		const type = parts[1]; // os, app, snapshot
+		await deleteMessage(chatId, messageId, env);
+		await showImagesList(chatId, region, type, 0, env);
 	}
-	// App menu
-	else if (data.startsWith('appmenu_')) {
-		const parts = data.replace('appmenu_', '').split('_');
+	// Pagination
+	else if (data.startsWith('imgpage_')) {
+		const parts = data.replace('imgpage_', '').split('_');
 		const region = parts[0];
-		const action = parts[1];
-		if (action === 'search') {
-			await deleteMessage(chatId, messageId, env);
-			await sendMessage(chatId, '🔍 *Search Apps*\n\nType app name:', env);
-			await setState(chatId, { step: 'searching_app', region: region }, env);
-		} else if (action === 'popular') {
-			await showPopularApps(chatId, messageId, region, env);
-		}
+		const type = parts[1];
+		const page = parseInt(parts[2]);
+		await showImagesListEdit(chatId, messageId, region, type, page, env);
 	}
-	// Image selection (OS or App)
+	// Search trigger
+	else if (data.startsWith('imgsearch_')) {
+		const parts = data.replace('imgsearch_', '').split('_');
+		const region = parts[0];
+		const type = parts[1];
+		await deleteMessage(chatId, messageId, env);
+		await sendMessage(chatId, `🔍 *Search ${type === 'app' ? 'Applications' : type === 'os' ? 'OS' : 'Snapshots'}*\n\nType at least ${MIN_SEARCH_LENGTH} characters:`, env);
+		await setState(chatId, { step: 'searching_image', region: region, type: type }, env);
+	}
+	// Image selection
 	else if (data.startsWith('selectimg_')) {
 		const parts = data.replace('selectimg_', '').split('_');
 		const region = parts[0];
-		const imageSlug = parts.slice(1).join('_');
+		const imageId = parts.slice(1).join('_');
 		await deleteMessage(chatId, messageId, env);
-		await showSizes(chatId, region, imageSlug, env);
+		await showSizes(chatId, region, imageId, env);
 	}
 	// Size selection (STEP 3)
 	else if (data.startsWith('size_')) {
 		const parts = data.replace('size_', '').split('_');
 		const region = parts[0];
-		const size = parts.slice(1).join('_');
+		const imageId = parts[1];
+		const size = parts.slice(2).join('_');
 		const state = await getState(chatId, env);
 		state.size = size;
 		state.region = region;
+		state.image = imageId;
 		await setState(chatId, state, env);
 		await deleteMessage(chatId, messageId, env);
-		await askDropletName(chatId, state.image, size, region, env);
+		await askDropletName(chatId, imageId, size, region, env);
 	}
 	// Droplet name
 	else if (data.startsWith('use_default_name_')) {
@@ -421,31 +379,37 @@ async function handleCallbackQuery(callbackQuery, env) {
 	} else if (data.startsWith('rebuild_')) {
 		const dropletId = data.replace('rebuild_', '');
 		await showRebuildImageTypeSelection(chatId, messageId, dropletId, env);
-	} else if (data.startsWith('rebuildtype_')) {
+	}
+	// Rebuild image type
+	else if (data.startsWith('rebuildtype_')) {
 		const parts = data.replace('rebuildtype_', '').split('_');
 		const dropletId = parts[0];
 		const type = parts[1];
-		if (type === 'os') {
-			await showRebuildOSImages(chatId, messageId, dropletId, env);
-		} else if (type === 'app') {
-			await showRebuildAppMenu(chatId, messageId, dropletId, env);
-		}
-	} else if (data.startsWith('rebuildappmenu_')) {
-		const parts = data.replace('rebuildappmenu_', '').split('_');
+		await showRebuildImagesList(chatId, messageId, dropletId, type, 0, env);
+	}
+	// Rebuild pagination
+	else if (data.startsWith('rebuildpage_')) {
+		const parts = data.replace('rebuildpage_', '').split('_');
 		const dropletId = parts[0];
-		const action = parts[1];
-		if (action === 'popular') {
-			await showRebuildPopularApps(chatId, messageId, dropletId, env);
-		} else if (action === 'search') {
-			await deleteMessage(chatId, messageId, env);
-			await sendMessage(chatId, '🔍 *Search Apps for Rebuild*\n\nType app name:', env);
-			await setState(chatId, { step: 'rebuild_search_app', dropletId: dropletId }, env);
-		}
-	} else if (data.startsWith('rebuildimg_')) {
+		const type = parts[1];
+		const page = parseInt(parts[2]);
+		await showRebuildImagesList(chatId, messageId, dropletId, type, page, env);
+	}
+	// Rebuild search
+	else if (data.startsWith('rebuildsearch_')) {
+		const parts = data.replace('rebuildsearch_', '').split('_');
+		const dropletId = parts[0];
+		const type = parts[1];
+		await deleteMessage(chatId, messageId, env);
+		await sendMessage(chatId, `🔍 *Search ${type === 'app' ? 'Applications' : type === 'os' ? 'OS' : 'Snapshots'}*\n\nType at least ${MIN_SEARCH_LENGTH} characters:`, env);
+		await setState(chatId, { step: 'rebuild_searching_image', dropletId: dropletId, type: type }, env);
+	}
+	// Rebuild image selection
+	else if (data.startsWith('rebuildimg_')) {
 		const parts = data.replace('rebuildimg_', '').split('_');
 		const dropletId = parts[0];
-		const imageSlug = parts.slice(1).join('_');
-		await confirmRebuild(chatId, messageId, dropletId, imageSlug, env);
+		const imageId = parts.slice(1).join('_');
+		await confirmRebuild(chatId, messageId, dropletId, imageId, env);
 	} else if (data.startsWith('execute_rebuild_')) {
 		const sessionId = data.replace('execute_rebuild_', '');
 		await executeRebuild(chatId, messageId, sessionId, env);
@@ -518,117 +482,203 @@ async function showImageTypeSelection(chatId, region, env) {
 	const keyboard = {
 		inline_keyboard: [
 			[{ text: '🐧 Operating Systems', callback_data: `imgtype_${region}_os` }],
-			[{ text: '📦 1-Click Apps', callback_data: `imgtype_${region}_app` }],
+			[{ text: '📦 Applications', callback_data: `imgtype_${region}_app` }],
+			[{ text: '📸 My Snapshots', callback_data: `imgtype_${region}_snapshot` }],
 			[{ text: '◀️ Back to Regions', callback_data: 'back_to_regions' }],
 		]
 	};
 	await sendMessage(chatId, `✅ Region: *${region}*\n\n🖥️ Step 2: Choose image type`, env, keyboard);
 }
 
-async function showOSImages(chatId, region, env) {
-	const apiToken = await getUserApiToken(chatId, env);
-	const url = 'https://api.digitalocean.com/v2/images?type=distribution&per_page=100';
-	const response = await fetch(url, {
-		headers: { Authorization: `Bearer ${apiToken}`, 'Content-Type': 'application/json' },
-	});
-	const data = await response.json();
-	const popularImages = data.images
-		.filter(img => img.status === 'available' && 
-			(img.slug?.includes('ubuntu') || img.slug?.includes('debian') || 
-			 img.slug?.includes('centos') || img.slug?.includes('fedora') || 
-			 img.slug?.includes('rocky')))
-		.slice(0, 10);
-	const keyboard = popularImages.map(image => [{
-		text: image.name,
-		callback_data: `selectimg_${region}_${image.slug || image.id}`
-	}]);
-	keyboard.push([{ text: '◀️ Back', callback_data: 'back_to_regions' }]);
-	await sendMessage(chatId, '🐧 *Select Operating System:*', env, { inline_keyboard: keyboard });
-}
+// === IMAGES LIST WITH PAGINATION ===
 
-async function showPopularApps(chatId, messageId, region, env) {
+async function showImagesList(chatId, region, type, page, env) {
 	const apiToken = await getUserApiToken(chatId, env);
-	const popularApps = await getPopularApps(env, apiToken);
-	if (popularApps.length === 0) {
-		await editMessage(chatId, messageId, '❌ No popular apps found.', env);
+	if (!apiToken) {
+		await sendMessage(chatId, '❌ No API token.', env);
 		return;
 	}
-	const keyboard = popularApps.map(app => [{
-		text: app.name,
-		callback_data: `selectimg_${region}_${app.slug}`
+	
+	const apiType = type === 'os' ? 'base' : type; // Convert 'os' to 'base' for API
+	let allImages = await getImagesByType(apiType, apiToken, env);
+	
+	// Filter by region
+	allImages = filterImagesByRegion(allImages, region);
+	
+	if (allImages.length === 0) {
+		await sendMessage(chatId, `❌ No ${type === 'app' ? 'applications' : type === 'os' ? 'OS images' : 'snapshots'} available in ${region}.`, env);
+		return;
+	}
+	
+	// Pagination
+	const totalPages = Math.ceil(allImages.length / ITEMS_PER_PAGE);
+	const start = page * ITEMS_PER_PAGE;
+	const end = start + ITEMS_PER_PAGE;
+	const pageImages = allImages.slice(start, end);
+	
+	// Build keyboard
+	const keyboard = pageImages.map(img => [{
+		text: img.name,
+		callback_data: `selectimg_${region}_${img.id}`
 	}]);
-	keyboard.push([{ text: '🔍 Search Instead', callback_data: `appmenu_${region}_search` }]);
+	
+	// Navigation buttons
+	const navButtons = [];
+	if (page > 0) {
+		navButtons.push({ text: '◀️ Previous', callback_data: `imgpage_${region}_${type}_${page - 1}` });
+	}
+	if (page < totalPages - 1) {
+		navButtons.push({ text: 'Next ▶️', callback_data: `imgpage_${region}_${type}_${page + 1}` });
+	}
+	if (navButtons.length > 0) keyboard.push(navButtons);
+	
+	// Search button
+	keyboard.push([{ text: '🔍 Search', callback_data: `imgsearch_${region}_${type}` }]);
 	keyboard.push([{ text: '◀️ Back', callback_data: 'back_to_regions' }]);
-	await editMessage(chatId, messageId, '⭐ *Popular Apps:*', env, { inline_keyboard: keyboard });
+	
+	const typeLabel = type === 'app' ? 'Applications' : type === 'os' ? 'Operating Systems' : 'Snapshots';
+	const text = `${typeLabel === 'Applications' ? '📦' : typeLabel === 'Operating Systems' ? '🐧' : '📸'} *${typeLabel}*\n\nPage ${page + 1}/${totalPages} (${allImages.length} total)`;
+	await sendMessage(chatId, text, env, { inline_keyboard: keyboard });
 }
 
-async function handleAppSearch(chatId, query, region, env) {
+async function showImagesListEdit(chatId, messageId, region, type, page, env) {
 	const apiToken = await getUserApiToken(chatId, env);
-	const apps = await getMarketplaceApps(env, apiToken);
-	const term = query.toLowerCase();
-	const results = apps.filter(app => app.slug.toLowerCase().includes(term));
+	const apiType = type === 'os' ? 'base' : type;
+	let allImages = await getImagesByType(apiType, apiToken, env);
+	allImages = filterImagesByRegion(allImages, region);
+	
+	const totalPages = Math.ceil(allImages.length / ITEMS_PER_PAGE);
+	const start = page * ITEMS_PER_PAGE;
+	const end = start + ITEMS_PER_PAGE;
+	const pageImages = allImages.slice(start, end);
+	
+	const keyboard = pageImages.map(img => [{
+		text: img.name,
+		callback_data: `selectimg_${region}_${img.id}`
+	}]);
+	
+	const navButtons = [];
+	if (page > 0) {
+		navButtons.push({ text: '◀️ Previous', callback_data: `imgpage_${region}_${type}_${page - 1}` });
+	}
+	if (page < totalPages - 1) {
+		navButtons.push({ text: 'Next ▶️', callback_data: `imgpage_${region}_${type}_${page + 1}` });
+	}
+	if (navButtons.length > 0) keyboard.push(navButtons);
+	
+	keyboard.push([{ text: '🔍 Search', callback_data: `imgsearch_${region}_${type}` }]);
+	keyboard.push([{ text: '◀️ Back', callback_data: 'back_to_regions' }]);
+	
+	const typeLabel = type === 'app' ? 'Applications' : type === 'os' ? 'Operating Systems' : 'Snapshots';
+	const text = `${typeLabel === 'Applications' ? '📦' : typeLabel === 'Operating Systems' ? '🐧' : '📸'} *${typeLabel}*\n\nPage ${page + 1}/${totalPages} (${allImages.length} total)`;
+	await editMessage(chatId, messageId, text, env, { inline_keyboard: keyboard });
+}
+
+// === IMAGE SEARCH ===
+
+async function handleImageSearch(chatId, query, state, env) {
+	if (query.length < MIN_SEARCH_LENGTH) {
+		await sendMessage(chatId, `❌ Search query too short. Min ${MIN_SEARCH_LENGTH} characters.`, env);
+		return;
+	}
+	
+	const apiToken = await getUserApiToken(chatId, env);
+	const apiType = state.type === 'os' ? 'base' : state.type;
+	let allImages = await getImagesByType(apiType, apiToken, env);
+	allImages = filterImagesByRegion(allImages, state.region);
+	
+	const searchTerm = query.toLowerCase();
+	const results = allImages.filter(img => img.name.toLowerCase().includes(searchTerm));
+	
 	if (results.length === 0) {
-		await sendMessage(chatId, '❌ No apps found. Try again:', env);
+		await sendMessage(chatId, '❌ No results found. Try another search:', env);
 		return;
 	}
-	// Region is embedded in callback data, no need for state here
-	const keyboard = results.slice(0, 15).map(app => [{
-		text: APP_DISPLAY_NAMES[app.slug] || app.slug,
-		callback_data: `selectimg_${region}_${app.slug}`
+	
+	// Show first page of results
+	const totalPages = Math.ceil(results.length / ITEMS_PER_PAGE);
+	const pageResults = results.slice(0, ITEMS_PER_PAGE);
+	
+	const keyboard = pageResults.map(img => [{
+		text: img.name,
+		callback_data: `selectimg_${state.region}_${img.id}`
 	}]);
-	await sendMessage(chatId, `📦 Found ${results.length} app(s):`, env, { inline_keyboard: keyboard });
-	// Clear search step
-	await setState(chatId, { region: region }, env);
+	
+	if (totalPages > 1) {
+		keyboard.push([{ text: 'Next ▶️', callback_data: `imgpage_${state.region}_${state.type}_1` }]);
+	}
+	
+	await sendMessage(chatId, `🔍 Found ${results.length} result(s)\n\nPage 1/${totalPages}`, env, { inline_keyboard: keyboard });
+	await clearState(chatId, env);
 }
 
 // === SIZE SELECTION (STEP 3) ===
 
-async function showSizes(chatId, region, imageSlug, env) {
+async function showSizes(chatId, region, imageId, env) {
 	const apiToken = await getUserApiToken(chatId, env);
-	const imageDetails = await getImageDetails(imageSlug, apiToken, env);
-	const data = await doApiCall('/sizes', 'GET', apiToken);
-	const availableSizes = data.sizes
+	
+	// Get image details
+	const imageData = await doApiCall(`/images/${imageId}`, 'GET', apiToken);
+	const image = imageData.image;
+	
+	if (!image) {
+		await sendMessage(chatId, '❌ Image not found.', env);
+		return;
+	}
+	
+	// Get region details for available sizes
+	const regionData = await doApiCall(`/regions`, 'GET', apiToken);
+	const regionInfo = regionData.regions.find(r => r.slug === region);
+	const regionSizes = regionInfo?.sizes || [];
+	
+	if (regionSizes.length === 0) {
+		await sendMessage(chatId, '❌ No sizes available in this region.', env);
+		return;
+	}
+	
+	// Get all sizes and filter
+	const sizesData = await doApiCall('/sizes', 'GET', apiToken);
+	const availableSizes = sizesData.sizes
 		.filter(size => {
-			if (!size.available || !size.regions.includes(region)) return false;
-			if (size.disk < imageDetails.min_disk_size) return false;
-			if (size.memory < imageDetails.min_memory) return false;
+			if (!size.available) return false;
+			if (!regionSizes.includes(size.slug)) return false;
+			if (size.disk < image.min_disk_size) return false;
 			return true;
 		})
 		.sort((a, b) => a.price_monthly - b.price_monthly);
 	
 	if (availableSizes.length === 0) {
-		const warningText = `⚠️ *No compatible sizes!*\n\n${imageSlug} requires:\n• Min ${imageDetails.min_disk_size}GB disk\n• Min ${Math.ceil(imageDetails.min_memory / 1024)}GB RAM`;
+		const warningText = `⚠️ *No compatible sizes!*\n\n${image.name} requires:\n• Min ${image.min_disk_size}GB disk`;
 		await sendMessage(chatId, warningText, env);
 		return;
 	}
 	
-	// Save image to state for later use
-	await setState(chatId, { region: region, image: imageSlug }, env);
+	// Save image to state
+	await setState(chatId, { region: region, image: imageId }, env);
 	
-	const keyboard = availableSizes.map(size => [{
+	const keyboard = availableSizes.slice(0, 15).map(size => [{
 		text: `${size.slug} - $${size.price_monthly}/mo (${Math.ceil(size.memory / 1024)}GB RAM, ${size.disk}GB)`,
-		callback_data: `size_${region}_${size.slug}`
+		callback_data: `size_${region}_${imageId}_${size.slug}`
 	}]);
 	keyboard.push([{ text: '◀️ Back', callback_data: 'back_to_regions' }]);
-	const infoText = `✅ Image: *${imageSlug}*\n\n💰 Step 3: Select size`;
+	const infoText = `✅ Image: *${image.name}*\n\n💰 Step 3: Select size`;
 	await sendMessage(chatId, infoText, env, { inline_keyboard: keyboard });
 }
 
 // === DROPLET NAME & CREATION ===
 
-function generateDropletName(image, size, region) {
-	const imageSlug = image.split('-')[0];
+function generateDropletName(imageId, size, region) {
 	const timestamp = Date.now().toString().slice(-4);
-	return `${imageSlug}-${size}-${region}-${timestamp}`;
+	return `droplet-${size}-${region}-${timestamp}`;
 }
 
-async function askDropletName(chatId, image, size, region, env) {
-	const defaultName = generateDropletName(image, size, region);
+async function askDropletName(chatId, imageId, size, region, env) {
+	const defaultName = generateDropletName(imageId, size, region);
 	const sessionId = `session_${chatId}_${Date.now()}`;
 	await env.DROPLET_CREATION.put(sessionId, JSON.stringify({
-		region, size, image, defaultName
+		region, size, image: imageId, defaultName
 	}), { expirationTtl: 300 });
-	const text = `📝 *Droplet Name*\n\nRegion: ${region}\nSize: ${size}\nImage: ${image}\n\nDefault: \`${defaultName}\`\n\nReply to change name.`;
+	const text = `📝 *Droplet Name*\n\nRegion: ${region}\nSize: ${size}\nImage ID: ${imageId}\n\nDefault: \`${defaultName}\`\n\nReply to change name.`;
 	const keyboard = {
 		inline_keyboard: [
 			[{ text: '✅ Use Default', callback_data: `use_default_name_${sessionId}` }],
@@ -649,7 +699,7 @@ async function useDefaultNameAndConfirm(chatId, sessionId, env) {
 	await env.DROPLET_CREATION.delete(sessionId);
 }
 
-async function confirmDropletCreation(chatId, name, region, size, image, env) {
+async function confirmDropletCreation(chatId, name, region, size, imageId, env) {
 	const apiToken = await getUserApiToken(chatId, env);
 	const keysData = await doApiCall('/account/keys', 'GET', apiToken);
 	const sshKeys = keysData.ssh_keys || [];
@@ -659,9 +709,9 @@ async function confirmDropletCreation(chatId, name, region, size, image, env) {
 	}
 	const creationId = `create_${chatId}_${Date.now()}`;
 	await env.DROPLET_CREATION.put(creationId, JSON.stringify({
-		name, region, size, image, sshKeyIds: sshKeys.map(key => key.id)
+		name, region, size, image: imageId, sshKeyIds: sshKeys.map(key => key.id)
 	}), { expirationTtl: 300 });
-	const text = `⚠️ *Confirm*\n\n*Name:* ${name}\n*Region:* ${region}\n*Size:* ${size}\n*Image:* ${image}\n*SSH Keys:* ${sshKeys.length}`;
+	const text = `⚠️ *Confirm*\n\n*Name:* ${name}\n*Region:* ${region}\n*Size:* ${size}\n*Image ID:* ${imageId}\n*SSH Keys:* ${sshKeys.length}`;
 	const keyboard = {
 		inline_keyboard: [
 			[{ text: '✅ Create', callback_data: `confirmcreate_${creationId}` }],
@@ -777,143 +827,110 @@ async function editMessageToDropletList(chatId, messageId, env) {
 	await editMessage(chatId, messageId, 'Your Droplets:', env, { inline_keyboard: keyboard });
 }
 
-// === REBUILD WITH APP SUPPORT ===
+// === REBUILD ===
 
 async function showRebuildImageTypeSelection(chatId, messageId, dropletId, env) {
 	const keyboard = {
 		inline_keyboard: [
 			[{ text: '🐧 Operating Systems', callback_data: `rebuildtype_${dropletId}_os` }],
-			[{ text: '📦 1-Click Apps', callback_data: `rebuildtype_${dropletId}_app` }],
+			[{ text: '📦 Applications', callback_data: `rebuildtype_${dropletId}_app` }],
+			[{ text: '📸 My Snapshots', callback_data: `rebuildtype_${dropletId}_snapshot` }],
 			[{ text: '◀️ Back', callback_data: `droplet_${dropletId}` }],
 		]
 	};
-	await editMessage(chatId, messageId, '🔄 *Rebuild Droplet*\n\n⚠️ Region cannot be changed\n\nChoose image type:', env, keyboard);
+	await editMessage(chatId, messageId, '🔄 *Rebuild Droplet*\n\n⚠️ All data will be deleted\n\nChoose image type:', env, keyboard);
 }
 
-async function showRebuildOSImages(chatId, messageId, dropletId, env) {
+async function showRebuildImagesList(chatId, messageId, dropletId, type, page, env) {
 	const apiToken = await getUserApiToken(chatId, env);
+	
+	// Get droplet details
 	const dropletData = await doApiCall(`/droplets/${dropletId}`, 'GET', apiToken);
 	const droplet = dropletData.droplet;
-	const currentDisk = droplet.disk;
-	const currentMemory = droplet.memory;
 	
-	const url = 'https://api.digitalocean.com/v2/images?type=distribution&per_page=100';
-	const response = await fetch(url, {
-		headers: { Authorization: `Bearer ${apiToken}`, 'Content-Type': 'application/json' },
-	});
-	const data = await response.json();
-	const compatibleImages = data.images.filter(img => {
-		if (img.status !== 'available') return false;
-		if (!img.slug?.includes('ubuntu') && !img.slug?.includes('debian') && 
-		    !img.slug?.includes('centos') && !img.slug?.includes('fedora') && 
-		    !img.slug?.includes('rocky')) return false;
-		const minDisk = img.min_disk_size || 10;
-		if (minDisk > currentDisk) return false;
-		return true;
-	}).slice(0, 10);
-	
-	if (compatibleImages.length === 0) {
-		await editMessage(chatId, messageId, '❌ No compatible OS images for current droplet size.', env);
+	if (!droplet) {
+		await editMessage(chatId, messageId, '❌ Droplet not found.', env);
 		return;
 	}
 	
-	const keyboard = compatibleImages.map(img => [{
+	// Get images
+	const apiType = type === 'os' ? 'base' : type;
+	let allImages = await getImagesByType(apiType, apiToken, env);
+	
+	// Filter for rebuild compatibility
+	allImages = filterImagesForRebuild(allImages, droplet);
+	
+	if (allImages.length === 0) {
+		await editMessage(chatId, messageId, `❌ No compatible ${type === 'app' ? 'applications' : type === 'os' ? 'OS images' : 'snapshots'} for this droplet.`, env);
+		return;
+	}
+	
+	// Pagination
+	const totalPages = Math.ceil(allImages.length / ITEMS_PER_PAGE);
+	const start = page * ITEMS_PER_PAGE;
+	const end = start + ITEMS_PER_PAGE;
+	const pageImages = allImages.slice(start, end);
+	
+	const keyboard = pageImages.map(img => [{
 		text: img.name,
-		callback_data: `rebuildimg_${dropletId}_${img.slug || img.id}`
+		callback_data: `rebuildimg_${dropletId}_${img.id}`
 	}]);
-	keyboard.push([{ text: '◀️ Back', callback_data: `rebuild_${dropletId}` }]);
-	await editMessage(chatId, messageId, `🐧 *Select OS*\n\n✅ Filtered for ${currentDisk}GB disk`, env, { inline_keyboard: keyboard });
-}
-
-async function showRebuildAppMenu(chatId, messageId, dropletId, env) {
-	const keyboard = {
-		inline_keyboard: [
-			[{ text: '🔍 Search Apps', callback_data: `rebuildappmenu_${dropletId}_search` }],
-			[{ text: '⭐ Popular Apps', callback_data: `rebuildappmenu_${dropletId}_popular` }],
-			[{ text: '◀️ Back', callback_data: `rebuild_${dropletId}` }],
-		]
-	};
-	await editMessage(chatId, messageId, '📦 *1-Click Apps*\n\nChoose option:', env, keyboard);
-}
-
-async function showRebuildPopularApps(chatId, messageId, dropletId, env) {
-	const apiToken = await getUserApiToken(chatId, env);
-	const dropletData = await doApiCall(`/droplets/${dropletId}`, 'GET', apiToken);
-	const droplet = dropletData.droplet;
-	const currentDisk = droplet.disk;
-	const currentMemory = droplet.memory;
 	
-	const popularApps = await getPopularApps(env, apiToken);
-	const compatibleApps = [];
-	
-	for (const app of popularApps) {
-		const details = await getImageDetails(app.slug, apiToken, env);
-		if (details.min_disk_size <= currentDisk && details.min_memory <= currentMemory) {
-			compatibleApps.push(app);
-		}
+	const navButtons = [];
+	if (page > 0) {
+		navButtons.push({ text: '◀️ Previous', callback_data: `rebuildpage_${dropletId}_${type}_${page - 1}` });
 	}
+	if (page < totalPages - 1) {
+		navButtons.push({ text: 'Next ▶️', callback_data: `rebuildpage_${dropletId}_${type}_${page + 1}` });
+	}
+	if (navButtons.length > 0) keyboard.push(navButtons);
 	
-	if (compatibleApps.length === 0) {
-		await editMessage(chatId, messageId, `❌ No compatible apps\n\nYour droplet:\n• ${currentDisk}GB disk\n• ${Math.ceil(currentMemory/1024)}GB RAM\n\nUpgrade droplet size for more apps.`, env);
+	keyboard.push([{ text: '🔍 Search', callback_data: `rebuildsearch_${dropletId}_${type}` }]);
+	keyboard.push([{ text: '◀️ Back', callback_data: `rebuild_${dropletId}` }]);
+	
+	const typeLabel = type === 'app' ? 'Applications' : type === 'os' ? 'Operating Systems' : 'Snapshots';
+	const text = `${typeLabel === 'Applications' ? '📦' : typeLabel === 'Operating Systems' ? '🐧' : '📸'} *${typeLabel}*\n\n✅ Compatible with ${droplet.size_slug}\nPage ${page + 1}/${totalPages} (${allImages.length} total)`;
+	await editMessage(chatId, messageId, text, env, { inline_keyboard: keyboard });
+}
+
+async function handleRebuildImageSearch(chatId, query, dropletId, env) {
+	if (query.length < MIN_SEARCH_LENGTH) {
+		await sendMessage(chatId, `❌ Search query too short. Min ${MIN_SEARCH_LENGTH} characters.`, env);
 		return;
 	}
 	
-	const keyboard = compatibleApps.map(app => [{
-		text: app.name,
-		callback_data: `rebuildimg_${dropletId}_${app.slug}`
-	}]);
-	keyboard.push([{ text: '🔍 Search Instead', callback_data: `rebuildappmenu_${dropletId}_search` }]);
-	keyboard.push([{ text: '◀️ Back', callback_data: `rebuild_${dropletId}` }]);
-	await editMessage(chatId, messageId, `⭐ *Compatible Apps*\n\n✅ Filtered for ${currentDisk}GB / ${Math.ceil(currentMemory/1024)}GB`, env, { inline_keyboard: keyboard });
-}
-
-async function handleRebuildAppSearch(chatId, query, dropletId, env) {
 	const apiToken = await getUserApiToken(chatId, env);
+	const state = await getState(chatId, env);
+	
+	// Get droplet details
 	const dropletData = await doApiCall(`/droplets/${dropletId}`, 'GET', apiToken);
 	const droplet = dropletData.droplet;
-	const currentDisk = droplet.disk;
-	const currentMemory = droplet.memory;
 	
-	const apps = await getMarketplaceApps(env, apiToken);
-	const term = query.toLowerCase();
-	const results = apps.filter(app => app.slug.toLowerCase().includes(term));
+	const apiType = state.type === 'os' ? 'base' : state.type;
+	let allImages = await getImagesByType(apiType, apiToken, env);
+	allImages = filterImagesForRebuild(allImages, droplet);
+	
+	const searchTerm = query.toLowerCase();
+	const results = allImages.filter(img => img.name.toLowerCase().includes(searchTerm));
 	
 	if (results.length === 0) {
-		// Clear state when no results
-		await clearState(chatId, env);
-		await sendMessage(chatId, '❌ No apps found. Use /droplets to try again.', env);
+		await sendMessage(chatId, '❌ No results found. Try another search:', env);
 		return;
 	}
 	
-	// Filter by droplet compatibility
-	const compatibleResults = [];
-	for (const app of results.slice(0, 20)) {
-		const details = await getImageDetails(app.slug, apiToken, env);
-		if (details.min_disk_size <= currentDisk && details.min_memory <= currentMemory) {
-			compatibleResults.push(app);
-		}
-	}
-	
-	if (compatibleResults.length === 0) {
-		// Clear state when no compatible apps
-		await clearState(chatId, env);
-		await sendMessage(chatId, `❌ Found apps but none compatible with your droplet (${currentDisk}GB/${Math.ceil(currentMemory/1024)}GB)\n\nUse /droplets to try again.`, env);
-		return;
-	}
-	
-	const keyboard = compatibleResults.slice(0, 15).map(app => [{
-		text: APP_DISPLAY_NAMES[app.slug] || app.slug,
-		callback_data: `rebuildimg_${dropletId}_${app.slug}`
+	const keyboard = results.slice(0, ITEMS_PER_PAGE).map(img => [{
+		text: img.name,
+		callback_data: `rebuildimg_${dropletId}_${img.id}`
 	}]);
-	await sendMessage(chatId, `📦 Found ${compatibleResults.length} compatible app(s):`, env, { inline_keyboard: keyboard });
-	// Clear state after showing results
+	
+	await sendMessage(chatId, `🔍 Found ${results.length} result(s)`, env, { inline_keyboard: keyboard });
 	await clearState(chatId, env);
 }
 
-async function confirmRebuild(chatId, messageId, dropletId, imageSlug, env) {
+async function confirmRebuild(chatId, messageId, dropletId, imageId, env) {
 	const sessionId = `rebuild_${chatId}_${Date.now()}`;
-	await env.DROPLET_CREATION.put(sessionId, JSON.stringify({ dropletId, imageSlug }), { expirationTtl: 300 });
-	const text = `⚠️ *Confirm Rebuild*\n\nDroplet: ${dropletId}\nNew Image: ${imageSlug}\n\n*All data will be deleted!*`;
+	await env.DROPLET_CREATION.put(sessionId, JSON.stringify({ dropletId, imageId }), { expirationTtl: 300 });
+	const text = `⚠️ *Confirm Rebuild*\n\nDroplet ID: ${dropletId}\nNew Image ID: ${imageId}\n\n*All data will be deleted!*`;
 	const keyboard = {
 		inline_keyboard: [
 			[{ text: '✅ Yes, Rebuild', callback_data: `execute_rebuild_${sessionId}` }],
@@ -932,17 +949,12 @@ async function executeRebuild(chatId, messageId, sessionId, env) {
 	}
 	const data = JSON.parse(dataStr);
 	await editMessage(chatId, messageId, '⏳ Rebuilding...', env);
-	const keysData = await doApiCall('/account/keys', 'GET', apiToken);
-	const sshKeys = keysData.ssh_keys || [];
-	if (sshKeys.length === 0) {
-		await editMessage(chatId, messageId, '❌ No SSH keys.', env);
-		return;
-	}
+	
 	const result = await doApiCall(`/droplets/${data.dropletId}/actions`, 'POST', apiToken, {
 		type: 'rebuild',
-		image: data.imageSlug,
-		ssh_keys: sshKeys.map(key => key.id),
+		image: data.imageId,
 	});
+	
 	if (result.action) {
 		await editMessage(chatId, messageId, `✅ *Rebuild Started!*\n\nStatus: ${result.action.status}`, env);
 		await env.DROPLET_CREATION.delete(sessionId);
