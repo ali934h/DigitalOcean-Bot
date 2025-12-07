@@ -13,6 +13,7 @@
  * - Fixed session expired by using state for sessionId
  * - Fixed rebuild back button after search
  * - Added interactive Menu button for easy command access
+ * - Fixed slash commands autocomplete with setMyCommands
  * 
  * FLOW:
  * Create: Region → [OS | Apps | Snapshots] → Size (filtered) → Name → Confirm
@@ -34,10 +35,17 @@ export default {
 			const response = await fetch(telegramApiUrl);
 			const result = await response.json();
 			
-			// Set Menu Button (appears next to message input)
-			await setMenuButton(env);
+			// Register bot commands (for / autocomplete)
+			await setMyCommands(env);
 			
-			return new Response(JSON.stringify(result, null, 2), {
+			// Set menu button (appears next to message input)
+			await setChatMenuButton(env);
+			
+			return new Response(JSON.stringify({
+				webhook: result,
+				commands: 'registered',
+				menuButton: 'configured'
+			}, null, 2), {
 				headers: { 'Content-Type': 'application/json' },
 			});
 		}
@@ -250,8 +258,28 @@ async function deleteMessage(chatId, messageId, env) {
 	});
 }
 
-// Set Menu Button (appears next to message input box)
-async function setMenuButton(env) {
+// Register bot commands (makes them appear when typing /)
+async function setMyCommands(env) {
+	const url = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/setMyCommands`;
+	const commands = [
+		{ command: 'start', description: 'Start the bot' },
+		{ command: 'menu', description: 'Show main menu' },
+		{ command: 'droplets', description: 'List your droplets' },
+		{ command: 'create', description: 'Create new droplet' },
+		{ command: 'setapi', description: 'Set API token' },
+		{ command: 'clearcache', description: 'Clear cache' },
+		{ command: 'help', description: 'Show help' },
+	];
+	
+	await fetch(url, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ commands: commands }),
+	});
+}
+
+// Set menu button (appears next to message input)
+async function setChatMenuButton(env) {
 	const url = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/setChatMenuButton`;
 	const body = {
 		menu_button: {
