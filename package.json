@@ -7,8 +7,8 @@
 		"dev": "wrangler dev",
 		"start": "wrangler dev",
 		"test": "vitest",
-		"clean-deploy": "rm -rf .wrangler && wrangler deploy",
-		"redeploy": "git pull && rm -rf .wrangler && wrangler deploy"
+		"setup-secrets": "echo 'Setting up secrets...' && npx wrangler secret put TELEGRAM_BOT_TOKEN && npx wrangler secret put ALLOWED_USER_IDS && echo 'Secrets configured!'",
+		"check-secrets": "npx wrangler secret list"
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "^0.8.19",
