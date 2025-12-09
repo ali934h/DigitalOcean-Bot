@@ -1,5 +1,5 @@
 /**
- * DigitalOcean Telegram Bot - Fixed Version
+ * DigitalOcean Telegram Bot - Enhanced Version
  * 
  * FIXES:
  * - Proper pagination through ALL images (using meta.total)
@@ -15,6 +15,9 @@
  * - Added interactive Menu button for easy command access
  * - Fixed slash commands autocomplete with setMyCommands
  * - Fixed rename accepting text without reply_to_message
+ * - Added droplet name validation (only a-z, A-Z, 0-9, ., -)
+ * - Converted setapi to direct input (no reply needed)
+ * - Removed all force_reply usage for better UX
  * 
  * FLOW:
  * Create: Region → [OS | Apps | Snapshots] → Size (filtered) → Name → Confirm
@@ -25,6 +28,12 @@ const ITEMS_PER_PAGE = 20;
 const MIN_SEARCH_LENGTH = 3;
 const CACHE_TTL = 86400; // 24 hours for OS and Apps
 const IMAGES_PER_PAGE = 200; // DigitalOcean API limit
+
+// Validate droplet name (DigitalOcean only allows: a-z, A-Z, 0-9, ., -)
+function isValidDropletName(name) {
+	if (!name || name.length === 0) return false;
+	return /^[a-zA-Z0-9.-]+$/.test(name);
+}
 
 export default {
 	async fetch(request, env) {
@@ -325,78 +334,52 @@ async function handleMessage(message, env) {
 		return;
 	}
 
-	// Check for reply messages
-	if (message.reply_to_message) {
-		const replyText = message.reply_to_message.text || '';
-		
-		// API Token reply
-		if (replyText.includes('API Token') || replyText.includes('API token')) {
-			await deleteMessage(chatId, message.reply_to_message.message_id, env);
-			await deleteMessage(chatId, message.message_id, env);
-			const validatingMsg = await sendMessage(chatId, '⏳ Validating your API token...', env);
-			const isValid = await saveUserApiToken(chatId, text.trim(), env);
-			if (validatingMsg.result?.message_id) {
-				await deleteMessage(chatId, validatingMsg.result.message_id, env);
-			}
-			if (isValid) {
-				await sendMessage(chatId, '✅ API token saved successfully!\n\nYou can now use /droplets and /create commands.', env);
-			} else {
-				await sendMessage(chatId, '❌ Invalid API token!\n\nPlease check your token and try /setapi again.', env);
-			}
-			return;
-		}
-		
-		// Droplet rename reply (FIXED - Using state instead of parsing message)
-		if (replyText.includes('📝 Rename Droplet')) {
-			// Get sessionId from state (not from message text!)
-			const state = await getState(chatId, env);
-			if (!state || state.step !== 'renaming_droplet' || !state.sessionId) {
-				await sendMessage(chatId, '❌ Session expired. Please try again.', env);
-				return;
-			}
-			
-			const sessionId = state.sessionId;
-			
-			// Get session data
-			const dataStr = await env.DROPLET_CREATION.get(sessionId);
-			if (!dataStr) {
-				await clearState(chatId, env);
-				await sendMessage(chatId, '❌ Session expired.', env);
-				return;
-			}
-			
-			// Delete messages for clean UX
-			await deleteMessage(chatId, message.reply_to_message.message_id, env);
-			await deleteMessage(chatId, message.message_id, env);
-			
-			// Parse data and confirm
-			const data = JSON.parse(dataStr);
-			await clearState(chatId, env);
-			await confirmDropletCreation(chatId, text.trim(), data.region, data.size, data.image, env);
-			return;
-		}
-	}
-
-	// Check state for search modes AND rename mode (FIXED!)
+	// Check state for direct input modes (no reply needed!)
 	const state = await getState(chatId, env);
 	
+	// IMPROVED: Direct API token input (no reply needed)
+	if (state?.step === 'setting_api_token') {
+		await deleteMessage(chatId, message.message_id, env);
+		const validatingMsg = await sendMessage(chatId, '⏳ Validating your API token...', env);
+		const isValid = await saveUserApiToken(chatId, text.trim(), env);
+		if (validatingMsg.result?.message_id) {
+			await deleteMessage(chatId, validatingMsg.result.message_id, env);
+		}
+		if (isValid) {
+			await sendMessage(chatId, '✅ API token saved successfully!\n\nYou can now use /droplets and /create commands.', env);
+		} else {
+			await sendMessage(chatId, '❌ Invalid API token!\n\nPlease check your token and try /setapi again.', env);
+		}
+		await clearState(chatId, env);
+		return;
+	}
+	
+	// Image search mode
 	if (state?.step === 'searching_image') {
 		await handleImageSearch(chatId, text, state, env);
 		return;
 	}
 	
+	// Rebuild image search mode
 	if (state?.step === 'rebuild_searching_image') {
 		await handleRebuildImageSearch(chatId, text, state, env);
 		return;
 	}
 	
-	// FIXED: Handle rename even without reply_to_message!
+	// IMPROVED: Droplet rename with validation
 	if (state?.step === 'renaming_droplet') {
 		const sessionId = state.sessionId;
 		
 		if (!sessionId) {
 			await clearState(chatId, env);
 			await sendMessage(chatId, '❌ Session expired. Please try /create again.', env);
+			return;
+		}
+		
+		// VALIDATE NAME!
+		const customName = text.trim();
+		if (!isValidDropletName(customName)) {
+			await sendMessage(chatId, '❌ *Invalid droplet name!*\n\n✅ Allowed characters:\n• Letters: a-z, A-Z\n• Numbers: 0-9\n• Special: . (dot) and - (dash)\n\nPlease try again:', env);
 			return;
 		}
 		
@@ -411,7 +394,7 @@ async function handleMessage(message, env) {
 		// Parse data and confirm with custom name
 		const data = JSON.parse(dataStr);
 		await clearState(chatId, env);
-		await confirmDropletCreation(chatId, text.trim(), data.region, data.size, data.image, env);
+		await confirmDropletCreation(chatId, customName, data.region, data.size, data.image, env);
 		return;
 	}
 
@@ -427,10 +410,11 @@ async function handleMessage(message, env) {
 		await clearState(chatId, env);
 		const hasExisting = await getUserApiToken(chatId, env);
 		const tokenText = hasExisting
-			? '🔑 *Change API Token*\n\n⚠️ This will clear all sessions.\n\nReply to this message with your new DigitalOcean API token.'
-			: '🔑 *Setup API Token*\n\nReply to this message with your DigitalOcean API token.\n\nGet it at: https://cloud.digitalocean.com/';
-		const keyboard = { force_reply: true, selective: true };
-		await sendMessage(chatId, tokenText, env, keyboard);
+			? '🔑 *Change API Token*\n\n⚠️ This will clear all sessions.\n\nSend your new DigitalOcean API token:'
+			: '🔑 *Setup API Token*\n\nSend your DigitalOcean API token:\n\nGet it at: https://cloud.digitalocean.com/';
+		await sendMessage(chatId, tokenText, env);
+		// Set state to accept API token
+		await setState(chatId, { step: 'setting_api_token' }, env);
 	} else if (text === '/droplets') {
 		await clearState(chatId, env);
 		await listDroplets(chatId, env);
@@ -473,10 +457,11 @@ async function handleCallbackQuery(callbackQuery, env) {
 		await deleteMessage(chatId, messageId, env);
 		const hasExisting = await getUserApiToken(chatId, env);
 		const tokenText = hasExisting
-			? '🔑 *Change API Token*\n\n⚠️ This will clear all sessions.\n\nReply to this message with your new DigitalOcean API token.'
-			: '🔑 *Setup API Token*\n\nReply to this message with your DigitalOcean API token.\n\nGet it at: https://cloud.digitalocean.com/';
-		const keyboard = { force_reply: true, selective: true };
-		await sendMessage(chatId, tokenText, env, keyboard);
+			? '🔑 *Change API Token*\n\n⚠️ This will clear all sessions.\n\nSend your new DigitalOcean API token:'
+			: '🔑 *Setup API Token*\n\nSend your DigitalOcean API token:\n\nGet it at: https://cloud.digitalocean.com/';
+		await sendMessage(chatId, tokenText, env);
+		// Set state to accept API token
+		await setState(chatId, { step: 'setting_api_token' }, env);
 		return;
 	} else if (data === 'menu_clearcache') {
 		await deleteMessage(chatId, messageId, env);
@@ -563,11 +548,11 @@ async function handleCallbackQuery(callbackQuery, env) {
 		await deleteMessage(chatId, messageId, env);
 		await useDefaultNameAndConfirm(chatId, sessionId, env);
 	}
-	// Rename droplet (FIXED - Store sessionId in state!)
+	// Rename droplet
 	else if (data.startsWith('rename_droplet_')) {
 		const sessionId = data.replace('rename_droplet_', '');
 		
-		// Get session data to show in reply message
+		// Get session data to show in message
 		const dataStr = await env.DROPLET_CREATION.get(sessionId);
 		if (!dataStr) {
 			await editMessage(chatId, messageId, '❌ Session expired.', env);
@@ -577,11 +562,11 @@ async function handleCallbackQuery(callbackQuery, env) {
 		const sessionData = JSON.parse(dataStr);
 		await deleteMessage(chatId, messageId, env);
 		
-		// Save sessionId to state (FIXED!)
+		// Save sessionId to state
 		await setState(chatId, { step: 'renaming_droplet', sessionId: sessionId }, env);
 		
-		// Send message asking for name (removed force_reply for better UX)
-		const text = `📝 *Rename Droplet*\n\nRegion: ${sessionData.region}\nSize: ${sessionData.size}\nImage: ${sessionData.image}\n\nSend your desired droplet name:`;
+		// Send message asking for name (direct input - no force_reply)
+		const text = `📝 *Rename Droplet*\n\nRegion: ${sessionData.region}\nSize: ${sessionData.size}\nImage: ${sessionData.image}\n\n✅ Allowed characters: a-z, A-Z, 0-9, . and -\n\nSend your desired droplet name:`;
 		await sendMessage(chatId, text, env);
 	}
 	// Confirm creation
@@ -629,12 +614,12 @@ async function handleCallbackQuery(callbackQuery, env) {
 		await sendMessage(chatId, `🔍 *Search ${type === 'app' ? 'Applications' : type === 'os' ? 'OS' : 'Snapshots'}*\n\nType at least ${MIN_SEARCH_LENGTH} characters:`, env);
 		await setState(chatId, { step: 'rebuild_searching_image', dropletId: dropletId, type: type }, env);
 	}
-	// Back from rebuild search (FIXED - Send new message instead of editing deleted one!)
+	// Back from rebuild search
 	else if (data.startsWith('back_from_rebuild_search_')) {
 		const dropletId = data.replace('back_from_rebuild_search_', '');
 		await clearState(chatId, env);
 		await deleteMessage(chatId, messageId, env);
-		await showRebuildImageTypeSelectionNew(chatId, dropletId, env);  // FIXED: Use new function!
+		await showRebuildImageTypeSelectionNew(chatId, dropletId, env);
 	}
 	// Rebuild image selection
 	else if (data.startsWith('rebuildimg_')) {
@@ -910,7 +895,6 @@ function generateDropletName(imageId, size, region) {
 	return `droplet-${size}-${region}-${timestamp}`;
 }
 
-// IMPROVED: Added Rename button with better UX
 async function askDropletName(chatId, imageId, size, region, env) {
 	const defaultName = generateDropletName(imageId, size, region);
 	const sessionId = `session_${chatId}_${Date.now()}`;
@@ -1085,7 +1069,7 @@ async function showRebuildImageTypeSelection(chatId, messageId, dropletId, env) 
 	await editMessage(chatId, messageId, '🔄 *Rebuild Droplet*\n\n⚠️ All data will be deleted\n\nChoose image type:', env, keyboard);
 }
 
-// Send new message (when accessed from back button after search) - FIXED!
+// Send new message (when accessed from back button after search)
 async function showRebuildImageTypeSelectionNew(chatId, dropletId, env) {
 	const keyboard = {
 		inline_keyboard: [
