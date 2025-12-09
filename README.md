@@ -137,21 +137,52 @@ Examples:
 
 ## 🔄 Updating
 
-### After Pulling Updates
+### Normal Update (No Local Changes)
+
+If you haven't modified any files:
 
 ```bash
 git pull origin main
 npm run deploy
 ```
 
-**⚠️ Critical:** After each update:
+### Clean Update (Recommended)
 
-1. **Check your KV namespace ID** in `wrangler.jsonc` - it may have been overwritten
-2. **Verify webhook** by visiting:
+If you've modified files or encounter merge conflicts, use a hard reset to get the latest version:
+
+```bash
+# ⚠️ This will discard ALL local changes!
+git fetch origin
+git reset --hard origin/main
+git clean -fd
+```
+
+**After hard reset:**
+1. Open `wrangler.jsonc`
+2. Update KV namespace ID with YOUR ID:
+   ```json
+   "kv_namespaces": [
+       {
+           "binding": "DROPLET_CREATION",
+           "id": "YOUR_KV_ID_HERE"  // ← Your unique ID!
+       }
+   ]
+   ```
+3. Deploy:
+   ```bash
+   npm run deploy
+   ```
+
+### Critical Post-Update Checks
+
+**⚠️ After each update:**
+
+1. **Verify KV namespace ID** in `wrangler.jsonc` matches YOUR account
+2. **Check webhook** by visiting:
    ```
    https://YOUR-WORKER.workers.dev/registerWebhook
    ```
-   Response should be `{"webhook": {"ok": true}, ...}`
+   Response should be: `{"webhook": {"ok": true}, ...}`
 
 ### If Secrets Are Missing
 
@@ -197,6 +228,18 @@ npx wrangler deploy
 2. Clear cache: `rm -rf .wrangler/`
 3. Redeploy: `npx wrangler deploy`
 4. Check webhook: visit `/registerWebhook`
+
+### Merge conflicts during update
+
+Use hard reset to get clean latest version:
+
+```bash
+git fetch origin
+git reset --hard origin/main
+git clean -fd
+```
+
+**Don't forget to restore your KV namespace ID after reset!**
 
 ## 📚 Architecture
 
@@ -250,6 +293,9 @@ A: Secrets are missing. Set `TELEGRAM_BOT_TOKEN` and `ALLOWED_USER_IDS` again.
 
 **Q: Why does old code deploy after update?**
 A: Check if KV namespace ID was overwritten in `wrangler.jsonc`. Use your own ID, not the one from Git.
+
+**Q: How do I get the latest updates without conflicts?**
+A: Use `git reset --hard origin/main` then restore your KV namespace ID in `wrangler.jsonc`.
 
 ## 📝 Changelog
 
