@@ -1,142 +1,142 @@
 # 🚀 Deployment Guide
 
-## 📌 مشکل متداول: چرا بعد از Clone کد قدیمی Deploy میشه؟
+## 📌 Common Issue: Why Does Old Code Deploy After Clone?
 
-### ❓ علت:
-**Secrets** (مثل `TELEGRAM_BOT_TOKEN` و `ALLOWED_USER_IDS`) در **Git** ذخیره نمیشن!
+### ❓ Reason:
+**Secrets** (like `TELEGRAM_BOT_TOKEN` and `ALLOWED_USER_IDS`) are **NOT stored in Git**!
 
-- Secrets فقط روی **Cloudflare** ذخیره میشن
-- هر بار که پروژه رو Clone میکنی، باید دوباره Secrets رو Set کنی
-- این برای امنیت هست (تا توکن‌ها تو Git نرن)
+- Secrets are only stored on **Cloudflare**
+- Every time you clone the project, you must set secrets again
+- This is for security (so tokens don't end up in Git)
 
 ---
 
-## 🛠️ روند صحیح Deployment
+## 🛠️ Proper Deployment Workflow
 
-### 🆕 برای اولین بار (Setup اولیه):
+### 🆕 First Time Setup:
 
 ```bash
-# 1. Clone کردن پروژه
+# 1. Clone the project
 git clone https://github.com/ali934h/DigitalOcean-Bot.git
 cd DigitalOcean-Bot
 
-# 2. نصب dependencies
+# 2. Install dependencies
 npm install
 
-# 3. Login به Cloudflare
+# 3. Login to Cloudflare
 npx wrangler login
 
-# 4. ایجاد KV Namespace (فقط برای پروژه جدید)
+# 4. Create KV Namespace (only for new projects)
 npx wrangler kv namespace create "DROPLET_CREATION"
-# ID رو کپی کن و در wrangler.jsonc جایگزین کن
+# Copy the ID and paste it in wrangler.jsonc
 
-# 5. Set کردن Secrets (مهم!)
+# 5. Set Secrets (Important!)
 npm run setup-secrets
-# یا:
+# Or manually:
 npx wrangler secret put TELEGRAM_BOT_TOKEN
 npx wrangler secret put ALLOWED_USER_IDS
 
 # 6. Deploy
 npm run deploy
 
-# 7. ثبت Webhook
+# 7. Register Webhook
 # Open in browser:
 https://YOUR-WORKER-NAME.workers.dev/registerWebhook
 ```
 
 ---
 
-### 🔄 برای Update کردن کد:
+### 🔄 For Updating Code:
 
 ```bash
-# 1. گرفتن آخرین تغییرات
+# 1. Pull latest changes
 git pull origin main
 
 # 2. Deploy
 npm run deploy
 
-# تمام! Secrets قبلاً Set شدن و نیازی به Set مجدد نیست.
+# Done! Secrets were already set and don't need to be set again.
 ```
 
 ---
 
-### 🔍 چک کردن Secrets:
+### 🔍 Check Secrets:
 
 ```bash
-# لیست Secrets
+# List secrets
 npm run check-secrets
 
-# اگر خالی بود [] یعنی Secrets نیستن!
-# باید دوباره Set کنی:
+# If empty [], secrets are missing!
+# Set them again:
 npm run setup-secrets
 ```
 
 ---
 
-## ⚠️ مواردی که Secrets پاک میشن:
+## ⚠️ When Secrets Are Lost:
 
-### ❌ **همیشه پاک میشن:**
-1. **Clone کردن پروژه در مسیر جدید**
-2. **Delete کردن Worker از Cloudflare Dashboard**
-3. **تغییر اسم Worker در `wrangler.jsonc`**
+### ❌ **Always Lost:**
+1. **Cloning project in a new location**
+2. **Deleting Worker from Cloudflare Dashboard**
+3. **Changing Worker name in `wrangler.jsonc`**
 
-### ✅ **باقی میمونن:**
-1. **Deploy عادی** (`npm run deploy`)
-2. **Git Pull** کردن
-3. **Update کردن کد**
+### ✅ **Preserved:**
+1. **Normal deployment** (`npm run deploy`)
+2. **Git pull**
+3. **Code updates**
 
 ---
 
 ## 🐞 Troubleshooting
 
-### مشکل: Bot جواب نمیده
+### Issue: Bot doesn't respond
 
 ```bash
-# 1. چک Secrets
+# 1. Check Secrets
 npm run check-secrets
 
-# 2. چک Webhook
+# 2. Check Webhook
 curl https://YOUR-WORKER.workers.dev/registerWebhook
 
-# 3. چک Logs
+# 3. Check Logs
 npx wrangler tail
 ```
 
-### مشکل: کد جدید Deploy نمیشه
+### Issue: New code doesn't deploy
 
 ```bash
-# 1. پاک کردن کش
- rm -rf .wrangler/
+# 1. Clear cache
+rm -rf .wrangler/
 
-# 2. Deploy مجدد
+# 2. Redeploy
 npm run deploy
 
-# 3. چک Dashboard
-# برو به Cloudflare Dashboard → Workers → Deployments
-# آخرین version رو چک کن
+# 3. Check Dashboard
+# Go to Cloudflare Dashboard → Workers → Deployments
+# Verify latest version is active
 ```
 
-### مشکل: Webhook 404 میده
+### Issue: Webhook returns 404
 
 ```bash
-# Secrets رو Set کن
+# Set secrets
 npm run setup-secrets
 
-# دوباره Deploy
+# Redeploy
 npm run deploy
 
-# Webhook رو ثبت کن
+# Register webhook
 # Open: https://YOUR-WORKER.workers.dev/registerWebhook
 ```
 
 ---
 
-## 📝 نکات مهم:
+## 📝 Important Notes:
 
-1. **Secrets هیچوقت تو Git Commit نمیشن** (برای امنیت)
-2. **بعد از Clone حتماً `npm run setup-secrets` رو اجرا کن**
-3. **برای Update عادی، فقط `git pull` و `npm run deploy` کافیه**
-4. **اگر Worker رو Delete کردی، حتماً Secrets رو دوباره Set کن**
+1. **Secrets are NEVER committed to Git** (for security)
+2. **After cloning, always run `npm run setup-secrets`**
+3. **For normal updates, just `git pull` and `npm run deploy` is enough**
+4. **If you delete the Worker, you MUST set secrets again**
 
 ---
 
@@ -152,17 +152,37 @@ npm run check-secrets   # List configured secrets
 
 ---
 
-## ✅ چک لیست برای Setup جدید:
+## ✅ Setup Checklist:
 
-- [ ] Clone پروژه
+- [ ] Clone project
 - [ ] `npm install`
 - [ ] `npx wrangler login`
-- [ ] Create KV Namespace (فقط برای پروژه جدید)
+- [ ] Create KV Namespace (only for new projects)
 - [ ] Update `wrangler.jsonc` with KV ID
 - [ ] `npm run setup-secrets`
 - [ ] `npm run deploy`
 - [ ] Register webhook
 - [ ] Test `/start` in Telegram
+
+---
+
+## 🔐 Security Best Practices:
+
+1. **Never commit secrets to Git**
+2. **Use different tokens for development and production**
+3. **Rotate API tokens periodically**
+4. **Keep `ALLOWED_USER_IDS` restricted to trusted users only**
+5. **Monitor logs regularly** with `npx wrangler tail`
+
+---
+
+## 📚 Additional Resources:
+
+- [Cloudflare Workers Docs](https://developers.cloudflare.com/workers/)
+- [Wrangler Configuration](https://developers.cloudflare.com/workers/wrangler/configuration/)
+- [Secrets Management](https://developers.cloudflare.com/workers/configuration/secrets/)
+- [Telegram Bot API](https://core.telegram.org/bots/api)
+- [DigitalOcean API](https://docs.digitalocean.com/reference/api/)
 
 ---
 
