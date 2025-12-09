@@ -12,8 +12,8 @@
 	},
 	"kv_namespaces": [
 		{
-			"binding": "DROPLET_CREATION",
-			"id": "db88ac305f2341738f05010174495197"
+			"binding": "KV_BINDING",
+			"id": "9853fdbb929c4ffba978ba488bbb620f"
 		}
 	]
 	/**

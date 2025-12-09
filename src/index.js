@@ -14,6 +14,7 @@
  * - Fixed rebuild back button after search
  * - Added interactive Menu button for easy command access
  * - Fixed slash commands autocomplete with setMyCommands
+ * - Fixed rename accepting text without reply_to_message
  * 
  * FLOW:
  * Create: Region → [OS | Apps | Snapshots] → Size (filtered) → Name → Confirm
@@ -376,7 +377,7 @@ async function handleMessage(message, env) {
 		}
 	}
 
-	// Check state for search modes
+	// Check state for search modes AND rename mode (FIXED!)
 	const state = await getState(chatId, env);
 	
 	if (state?.step === 'searching_image') {
@@ -386,6 +387,31 @@ async function handleMessage(message, env) {
 	
 	if (state?.step === 'rebuild_searching_image') {
 		await handleRebuildImageSearch(chatId, text, state, env);
+		return;
+	}
+	
+	// FIXED: Handle rename even without reply_to_message!
+	if (state?.step === 'renaming_droplet') {
+		const sessionId = state.sessionId;
+		
+		if (!sessionId) {
+			await clearState(chatId, env);
+			await sendMessage(chatId, '❌ Session expired. Please try /create again.', env);
+			return;
+		}
+		
+		// Get session data
+		const dataStr = await env.DROPLET_CREATION.get(sessionId);
+		if (!dataStr) {
+			await clearState(chatId, env);
+			await sendMessage(chatId, '❌ Session expired. Please try /create again.', env);
+			return;
+		}
+		
+		// Parse data and confirm with custom name
+		const data = JSON.parse(dataStr);
+		await clearState(chatId, env);
+		await confirmDropletCreation(chatId, text.trim(), data.region, data.size, data.image, env);
 		return;
 	}
 
@@ -554,10 +580,9 @@ async function handleCallbackQuery(callbackQuery, env) {
 		// Save sessionId to state (FIXED!)
 		await setState(chatId, { step: 'renaming_droplet', sessionId: sessionId }, env);
 		
-		// Send message with force_reply (cleaner without showing sessionId)
-		const text = `📝 *Rename Droplet*\n\nRegion: ${sessionData.region}\nSize: ${sessionData.size}\nImage: ${sessionData.image}\n\nReply with your desired droplet name:`;
-		const keyboard = { force_reply: true, selective: true };
-		await sendMessage(chatId, text, env, keyboard);
+		// Send message asking for name (removed force_reply for better UX)
+		const text = `📝 *Rename Droplet*\n\nRegion: ${sessionData.region}\nSize: ${sessionData.size}\nImage: ${sessionData.image}\n\nSend your desired droplet name:`;
+		await sendMessage(chatId, text, env);
 	}
 	// Confirm creation
 	else if (data.startsWith('confirmcreate_')) {
