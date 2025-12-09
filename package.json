@@ -1,12 +1,14 @@
 {
 	"name": "telegram-do-bot",
-	"version": "0.0.0",
+	"version": "2.1.0",
 	"private": true,
 	"scripts": {
 		"deploy": "wrangler deploy",
 		"dev": "wrangler dev",
 		"start": "wrangler dev",
-		"test": "vitest"
+		"test": "vitest",
+		"clean-deploy": "rm -rf .wrangler && wrangler deploy",
+		"redeploy": "git pull && rm -rf .wrangler && wrangler deploy"
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "^0.8.19",
