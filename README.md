@@ -12,9 +12,11 @@ A **powerful serverless Telegram bot** to manage DigitalOcean Droplets directly 
 - **Menu Button** - Quick access to all commands next to message input
 - **Slash Commands** - Type `/` to see all available commands with descriptions
 - **Inline Keyboards** - Beautiful interactive buttons for all actions
+- **Direct Input** - No need to reply to messages - just send text directly
 - **Search Functionality** - Quickly find OS images, applications, and snapshots
 - **Pagination** - Browse through hundreds of images efficiently
 - **Multi-Step Wizards** - Guided workflows for complex operations
+- **Smart Validation** - Real-time validation with helpful error messages
 
 ### 🖥️ Droplet Management
 - **List Droplets** - View all your droplets with real-time status
@@ -26,7 +28,7 @@ A **powerful serverless Telegram bot** to manage DigitalOcean Droplets directly 
   - 📦 Install **Applications** (Docker, WordPress, LAMP, etc.)
   - 📸 Use **Your Snapshots**
   - 🔍 **Search** through 200+ images
-  - 📝 Custom or auto-generated names
+  - 📝 Custom or auto-generated names with **validation**
   - ✅ Confirmation with full details
 - **Rebuild Droplet** - Reinstall with a new OS while keeping IP:
   - 🔄 Change OS without creating new droplet
@@ -46,6 +48,7 @@ A **powerful serverless Telegram bot** to manage DigitalOcean Droplets directly 
 ### 🔐 Security Features
 - **Per-User API Tokens** - Each user stores their own DigitalOcean API token
 - **Token Validation** - Automatic verification before saving
+- **Name Validation** - Prevents invalid droplet names (a-z, A-Z, 0-9, ., -)
 - **SSH Key Authentication** - Only SSH keys, no passwords
 - **User Whitelist** - Restrict access to specific Telegram user IDs
 - **Secure Storage** - API tokens encrypted in Cloudflare KV
@@ -254,7 +257,7 @@ You should see:
 1. Open Telegram
 2. Search for your bot
 3. Send `/start`
-4. Send `/setapi` and reply with your DigitalOcean API token
+4. Send `/setapi` and **directly send** your DigitalOcean API token (no need to reply!)
 5. Use `/menu` to see all options!
 
 **Now you can:**
@@ -265,6 +268,13 @@ You should see:
 - 🗑️ Delete droplets
 
 ## 📚 User Guide
+
+### Setting Up API Token
+
+1. Send `/setapi`
+2. **Directly send your API token** - no need to reply to any message!
+3. Bot validates and saves it
+4. You're ready to go! ✅
 
 ### Creating a Droplet
 
@@ -281,7 +291,10 @@ You should see:
 6. **Choose Size** - Pick specs and pricing
 7. **Name Your Droplet**:
    - ✅ Use Default (auto-generated)
-   - 📝 Rename (custom name)
+   - 📝 Rename - **directly send your custom name**
+     - Allowed: `a-z`, `A-Z`, `0-9`, `.` (dot), `-` (dash)
+     - Examples: `web-server-01`, `my-app.production`, `test-db`
+     - Invalid: spaces, underscores, special chars
 8. **Confirm** - Review and create!
 
 Your droplet will be ready in ~60 seconds!
@@ -353,14 +366,14 @@ npx wrangler deploy
 ### Required Secrets
 
 | Secret | Description | Example |
-|--------|-------------|---------||
+|--------|-------------|---------|
 | `TELEGRAM_BOT_TOKEN` | Bot token from @BotFather | `1234567890:ABC...` |
 | `ALLOWED_USER_IDS` | Comma-separated user IDs | `123456789,987654321` |
 
 ### KV Namespace
 
 | Binding | Purpose |
-|---------|---------||
+|---------|---------|
 | `DROPLET_CREATION` | User API tokens, sessions, cache |
 
 **Data stored:**
@@ -378,15 +391,16 @@ npx wrangler deploy
         │
         │ Webhook (HTTPS)
         │
-┌───────┴──────────────────────────┐
+┌───────┴──────────────────────────────┐
 │  Cloudflare Workers (Edge)    │
 │  - Handle messages/callbacks  │
 │  - State management           │
 │  - Caching logic              │
+│  - Input validation           │
 └─────┬──────────┬──────────────┘
       │            │
       │            │
-┌─────┴─────┐  ┌───┴───────────────────┐
+┌─────┴─────┐  ┌───┴─────────────────────┐
 │  KV Store  │  │  DigitalOcean API  │
 │  - Tokens  │  │  - Droplets        │
 │  - Cache   │  │  - Images          │
@@ -398,8 +412,9 @@ npx wrangler deploy
 1. User sends message → Telegram webhook → Worker
 2. Worker checks KV for user's API token
 3. Worker calls DigitalOcean API (with caching)
-4. Worker processes response
-5. Worker sends formatted message back to Telegram
+4. Worker validates input (names, tokens, etc.)
+5. Worker processes response
+6. Worker sends formatted message back to Telegram
 
 ## 🐛 Troubleshooting
 
@@ -422,7 +437,7 @@ npx wrangler secret put ALLOWED_USER_IDS
 
 **Fix:** Configure your token:
 1. Send `/setapi`
-2. Reply with DigitalOcean API token
+2. Directly send your DigitalOcean API token
 
 ### "Invalid API token"
 
@@ -435,6 +450,22 @@ npx wrangler secret put ALLOWED_USER_IDS
 ### "No SSH Keys Found"
 
 **Fix:** Add SSH key to DigitalOcean (see Step 3.1)
+
+### "Invalid droplet name"
+
+**Allowed characters:**
+- Letters: `a-z`, `A-Z`
+- Numbers: `0-9`
+- Dot: `.`
+- Dash: `-`
+
+**Examples:**
+- ✅ `web-server-01`
+- ✅ `my-app.production`
+- ✅ `db.test`
+- ❌ `my_server` (underscore not allowed)
+- ❌ `my server` (space not allowed)
+- ❌ `my@server` (special char not allowed)
 
 ### Commands don't autocomplete
 
@@ -476,6 +507,7 @@ Must see: `"commands": "registered"`
 5. **Monitor logs** - Check `wrangler tail` regularly
 6. **Update dependencies** - Run `npm update` monthly
 7. **Unique worker names** - Avoid name conflicts
+8. **Validate all inputs** - Built-in validation prevents errors
 
 ## ❓ FAQ
 
@@ -484,6 +516,12 @@ Must see: `"commands": "registered"`
 
 ### Q: Is my API token secure?
 **A:** Yes. Stored encrypted in Cloudflare KV, never logged or exposed.
+
+### Q: Do I need to reply to messages?
+**A:** No! All inputs (API token, droplet names) can be sent directly. Just send the text after the command.
+
+### Q: What characters are allowed in droplet names?
+**A:** Only `a-z`, `A-Z`, `0-9`, `.` (dot), and `-` (dash). The bot validates this for you.
 
 ### Q: Does this cost money?
 **A:** 
@@ -520,14 +558,22 @@ Contributions welcome!
 
 ## 📝 Changelog
 
-### v2.0.0 (Latest)
+### v2.1.0 (Latest)
+- ✨ Added droplet name validation (a-z, A-Z, 0-9, ., -)
+- 🔑 Improved `/setapi` - no reply needed, direct input
+- 📝 Improved rename flow - direct input with validation
+- 🛠️ Removed all `force_reply` usage for better UX
+- 🐛 Better error messages with clear instructions
+- ⚡ Performance improvements
+
+### v2.0.0
 - ✨ Added Menu Button next to message input
 - 🔍 Added slash command autocomplete
 - 🔍 Added search functionality (OS/Apps/Snapshots)
 - 📚 Added pagination for 200+ images
 - 🔄 Added rebuild droplet feature
 - 📏 Smart caching system (24h TTL)
-- ❔ Added `/help` command
+- ❓ Added `/help` command
 - 🗑️ Added `/clearcache` command
 - 🐛 Fixed session management
 - ⚡ Performance improvements
