@@ -364,7 +364,7 @@ async function showMainMenu(chatId, env) {
 	};
 	
 	const status = hasApiToken ? '✅ API token configured' : '⚠️ No API token set';
-	const text = `🤖 *DigitalOcean Bot Menu*\n\n${status}\n\nSelect an option:`;
+	const text = `🤖 *DigitalOcean Bot Menu*\\n\\n${status}\\n\\nSelect an option:`;
 	await sendMessage(chatId, text, env, keyboard);
 }
 
@@ -393,9 +393,9 @@ async function handleMessage(message, env) {
 			await deleteMessage(chatId, validatingMsg.result.message_id, env);
 		}
 		if (isValid) {
-			await sendMessage(chatId, '✅ API token saved successfully!\n\nYou can now use /droplets and /create commands.', env);
+			await sendMessage(chatId, '✅ API token saved successfully!\\n\\nYou can now use /droplets and /create commands.', env);
 		} else {
-			await sendMessage(chatId, '❌ Invalid API token!\n\nPlease check your token and try /setapi again.', env);
+			await sendMessage(chatId, '❌ Invalid API token!\\n\\nPlease check your token and try /setapi again.', env);
 		}
 		await clearState(chatId, env);
 		return;
@@ -426,7 +426,7 @@ async function handleMessage(message, env) {
 		// VALIDATE NAME!
 		const customName = text.trim();
 		if (!isValidDropletName(customName)) {
-			await sendMessage(chatId, '❌ *Invalid droplet name!*\n\n✅ Allowed characters:\n• Letters: a-z, A-Z\n• Numbers: 0-9\n• Special: . (dot) and - (dash)\n\nPlease try again:', env);
+			await sendMessage(chatId, '❌ *Invalid droplet name!*\\n\\n✅ Allowed characters:\\n• Letters: a-z, A-Z\\n• Numbers: 0-9\\n• Special: . (dot) and - (dash)\\n\\nPlease try again:', env);
 			return;
 		}
 		
@@ -459,7 +459,7 @@ async function handleMessage(message, env) {
 		
 		// Check length
 		if (noteText.length > MAX_NOTE_LENGTH) {
-			await sendMessage(chatId, `❌ Note too long! Maximum ${MAX_NOTE_LENGTH} characters.\n\nYour note: ${noteText.length} characters\n\nPlease try again:`, env);
+			await sendMessage(chatId, `❌ Note too long! Maximum ${MAX_NOTE_LENGTH} characters.\\n\\nYour note: ${noteText.length} characters\\n\\nPlease try again:`, env);
 			return;
 		}
 		
@@ -468,7 +468,7 @@ async function handleMessage(message, env) {
 		await clearState(chatId, env);
 		
 		if (success) {
-			await sendMessage(chatId, '✅ *Note saved!*\n\nYou can view it in droplet details.', env);
+			await sendMessage(chatId, '✅ *Note saved!*\\n\\nYou can view it in droplet details.', env);
 		} else {
 			await sendMessage(chatId, '❌ Failed to save note. Please try again.', env);
 		}
@@ -481,14 +481,14 @@ async function handleMessage(message, env) {
 		await showMainMenu(chatId, env);
 	} else if (text === '/help') {
 		await clearState(chatId, env);
-		const helpText = `📚 *DigitalOcean Bot Help*\n\n*Commands:*\n• /menu - Show main menu\n• /droplets - List your droplets\n• /create - Create new droplet\n• /setapi - Set API token\n• /clearcache - Clear cached data\n• /help - Show this help\n\n*Features:*\n• Create droplets with OS/Apps/Snapshots\n• Rebuild existing droplets\n• Delete droplets\n• Search images\n• Add notes to droplets\n• Smart caching for faster performance\n\n*Get API Token:*\nhttps://cloud.digitalocean.com/account/api/tokens`;
+		const helpText = `📚 *DigitalOcean Bot Help*\\n\\n*Commands:*\\n• /menu - Show main menu\\n• /droplets - List your droplets\\n• /create - Create new droplet\\n• /setapi - Set API token\\n• /clearcache - Clear cached data\\n• /help - Show this help\\n\\n*Features:*\\n• Create droplets with OS/Apps/Snapshots\\n• Rebuild existing droplets\\n• Delete droplets\\n• Search images\\n• Add notes to droplets\\n• Smart caching for faster performance\\n\\n*Get API Token:*\\nhttps://cloud.digitalocean.com/account/api/tokens`;
 		await sendMessage(chatId, helpText, env);
 	} else if (text === '/setapi') {
 		await clearState(chatId, env);
 		const hasExisting = await getUserApiToken(chatId, env);
 		const tokenText = hasExisting
-			? '🔑 *Change API Token*\n\n⚠️ This will clear all sessions.\n\nSend your new DigitalOcean API token:'
-			: '🔑 *Setup API Token*\n\nSend your DigitalOcean API token:\n\nGet it at: https://cloud.digitalocean.com/';
+			? '🔑 *Change API Token*\\n\\n⚠️ This will clear all sessions.\\n\\nSend your new DigitalOcean API token:'
+			: '🔑 *Setup API Token*\\n\\nSend your DigitalOcean API token:\\n\\nGet it at: https://cloud.digitalocean.com/';
 		await sendMessage(chatId, tokenText, env);
 		// Set state to accept API token
 		await setState(chatId, { step: 'setting_api_token' }, env);
@@ -506,7 +506,7 @@ async function handleMessage(message, env) {
 		if (msg.result?.message_id) {
 			await deleteMessage(chatId, msg.result.message_id, env);
 		}
-		await sendMessage(chatId, `✅ Cache cleared!\n\n🗑️ Deleted ${count} cached items\n🔄 Cleared your sessions\n\n💡 API token & notes preserved`, env);
+		await sendMessage(chatId, `✅ Cache cleared!\\n\\n🗑️ Deleted ${count} cached items\\n🔄 Cleared your sessions\\n\\n💡 API token & notes preserved`, env);
 	}
 }
 
@@ -534,8 +534,8 @@ async function handleCallbackQuery(callbackQuery, env) {
 		await deleteMessage(chatId, messageId, env);
 		const hasExisting = await getUserApiToken(chatId, env);
 		const tokenText = hasExisting
-			? '🔑 *Change API Token*\n\n⚠️ This will clear all sessions.\n\nSend your new DigitalOcean API token:'
-			: '🔑 *Setup API Token*\n\nSend your DigitalOcean API token:\n\nGet it at: https://cloud.digitalocean.com/';
+			? '🔑 *Change API Token*\\n\\n⚠️ This will clear all sessions.\\n\\nSend your new DigitalOcean API token:'
+			: '🔑 *Setup API Token*\\n\\nSend your DigitalOcean API token:\\n\\nGet it at: https://cloud.digitalocean.com/';
 		await sendMessage(chatId, tokenText, env);
 		// Set state to accept API token
 		await setState(chatId, { step: 'setting_api_token' }, env);
@@ -548,11 +548,11 @@ async function handleCallbackQuery(callbackQuery, env) {
 		if (msg.result?.message_id) {
 			await deleteMessage(chatId, msg.result.message_id, env);
 		}
-		await sendMessage(chatId, `✅ Cache cleared!\n\n🗑️ Deleted ${count} cached items\n🔄 Cleared your sessions\n\n💡 API token & notes preserved`, env);
+		await sendMessage(chatId, `✅ Cache cleared!\\n\\n🗑️ Deleted ${count} cached items\\n🔄 Cleared your sessions\\n\\n💡 API token & notes preserved`, env);
 		return;
 	} else if (data === 'menu_help') {
 		await deleteMessage(chatId, messageId, env);
-		const helpText = `📚 *DigitalOcean Bot Help*\n\n*Commands:*\n• /menu - Show main menu\n• /droplets - List your droplets\n• /create - Create new droplet\n• /setapi - Set API token\n• /clearcache - Clear cached data\n• /help - Show this help\n\n*Features:*\n• Create droplets with OS/Apps/Snapshots\n• Rebuild existing droplets\n• Delete droplets\n• Search images\n• Add notes to droplets\n• Smart caching for faster performance\n\n*Get API Token:*\nhttps://cloud.digitalocean.com/account/api/tokens`;
+		const helpText = `📚 *DigitalOcean Bot Help*\\n\\n*Commands:*\\n• /menu - Show main menu\\n• /droplets - List your droplets\\n• /create - Create new droplet\\n• /setapi - Set API token\\n• /clearcache - Clear cached data\\n• /help - Show this help\\n\\n*Features:*\\n• Create droplets with OS/Apps/Snapshots\\n• Rebuild existing droplets\\n• Delete droplets\\n• Search images\\n• Add notes to droplets\\n• Smart caching for faster performance\\n\\n*Get API Token:*\\nhttps://cloud.digitalocean.com/account/api/tokens`;
 		await sendMessage(chatId, helpText, env);
 		return;
 	}
@@ -586,7 +586,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 		const region = parts[0];
 		const type = parts[1];
 		await deleteMessage(chatId, messageId, env);
-		await sendMessage(chatId, `🔍 *Search ${type === 'app' ? 'Applications' : type === 'os' ? 'OS' : 'Snapshots'}*\n\nType at least ${MIN_SEARCH_LENGTH} characters:`, env);
+		await sendMessage(chatId, `🔍 *Search ${type === 'app' ? 'Applications' : type === 'os' ? 'OS' : 'Snapshots'}*\\n\\nType at least ${MIN_SEARCH_LENGTH} characters:`, env);
 		await setState(chatId, { step: 'searching_image', region: region, type: type }, env);
 	}
 	// Back from search
@@ -643,7 +643,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 		await setState(chatId, { step: 'renaming_droplet', sessionId: sessionId }, env);
 		
 		// Send message asking for name (direct input - no force_reply)
-		const text = `📝 *Rename Droplet*\n\nRegion: ${sessionData.region}\nSize: ${sessionData.size}\nImage: ${sessionData.image}\n\n✅ Allowed characters: a-z, A-Z, 0-9, . and -\n\nSend your desired droplet name:`;
+		const text = `📝 *Rename Droplet*\\n\\nRegion: ${sessionData.region}\\nSize: ${sessionData.size}\\nImage: ${sessionData.image}\\n\\n✅ Allowed characters: a-z, A-Z, 0-9, . and -\\n\\nSend your desired droplet name:`;
 		await sendMessage(chatId, text, env);
 	}
 	// Confirm creation
@@ -688,13 +688,13 @@ async function handleCallbackQuery(callbackQuery, env) {
 		const dropletId = data.replace('add_note_', '');
 		await deleteMessage(chatId, messageId, env);
 		await setState(chatId, { step: 'editing_note', dropletId: dropletId }, env);
-		await sendMessage(chatId, `📝 *Add Note*\n\nSend your note for this droplet:\n\n✅ Max ${MAX_NOTE_LENGTH} characters\n✅ Multi-line supported`, env);
+		await sendMessage(chatId, `📝 *Add Note*\\n\\nSend your note for this droplet:\\n\\n✅ Max ${MAX_NOTE_LENGTH} characters\\n✅ Multi-line supported`, env);
 	} else if (data.startsWith('edit_note_')) {
 		const dropletId = data.replace('edit_note_', '');
 		await deleteMessage(chatId, messageId, env);
 		const currentNote = await getDropletNote(dropletId, env);
 		await setState(chatId, { step: 'editing_note', dropletId: dropletId }, env);
-		const text = `📝 *Edit Note*\n\nCurrent note:\n\`\`\`\n${currentNote || 'No note'}\n\`\`\`\n\nSend your new note:\n\n✅ Max ${MAX_NOTE_LENGTH} characters\n✅ Multi-line supported`;
+		const text = `📝 *Edit Note*\\n\\nCurrent note:\\n\\`\\`\\`\\n${currentNote || 'No note'}\\n\\`\\`\\`\\n\\nSend your new note:\\n\\n✅ Max ${MAX_NOTE_LENGTH} characters\\n✅ Multi-line supported`;
 		await sendMessage(chatId, text, env);
 	} else if (data.startsWith('back_to_droplet_')) {
 		const dropletId = data.replace('back_to_droplet_', '');
@@ -721,7 +721,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 		const dropletId = parts[0];
 		const type = parts[1];
 		await deleteMessage(chatId, messageId, env);
-		await sendMessage(chatId, `🔍 *Search ${type === 'app' ? 'Applications' : type === 'os' ? 'OS' : 'Snapshots'}*\n\nType at least ${MIN_SEARCH_LENGTH} characters:`, env);
+		await sendMessage(chatId, `🔍 *Search ${type === 'app' ? 'Applications' : type === 'os' ? 'OS' : 'Snapshots'}*\\n\\nType at least ${MIN_SEARCH_LENGTH} characters:`, env);
 		await setState(chatId, { step: 'rebuild_searching_image', dropletId: dropletId, type: type }, env);
 	}
 	// Back from rebuild search
@@ -784,7 +784,7 @@ async function showRegions(chatId, env) {
 		}
 		keyboard.push(row);
 	}
-	await sendMessage(chatId, '🚀 *Create New Droplet*\n\n🌍 Step 1: Select region', env, { inline_keyboard: keyboard });
+	await sendMessage(chatId, '🚀 *Create New Droplet*\\n\\n🌍 Step 1: Select region', env, { inline_keyboard: keyboard });
 }
 
 async function showRegionsEdit(chatId, messageId, env) {
@@ -814,7 +814,7 @@ async function showImageTypeSelection(chatId, region, env) {
 			[{ text: '◀️ Back to Regions', callback_data: 'back_to_regions' }],
 		]
 	};
-	await sendMessage(chatId, `✅ Region: *${region}*\n\n🖥️ Step 2: Choose image type`, env, keyboard);
+	await sendMessage(chatId, `✅ Region: *${region}*\\n\\n🖥️ Step 2: Choose image type`, env, keyboard);
 }
 
 // === IMAGES LIST WITH PAGINATION ===
@@ -865,7 +865,7 @@ async function showImagesList(chatId, region, type, page, env) {
 	
 	const typeLabel = type === 'app' ? 'Applications' : type === 'os' ? 'Operating Systems' : 'Snapshots';
 	const emoji = typeLabel === 'Applications' ? '📦' : typeLabel === 'Operating Systems' ? '🐧' : '📸';
-	const text = `${emoji} *${typeLabel}*\n\nPage ${page + 1}/${totalPages} (${allImages.length} total)`;
+	const text = `${emoji} *${typeLabel}*\\n\\nPage ${page + 1}/${totalPages} (${allImages.length} total)`;
 	await sendMessage(chatId, text, env, { inline_keyboard: keyboard });
 }
 
@@ -898,7 +898,7 @@ async function showImagesListEdit(chatId, messageId, region, type, page, env) {
 	
 	const typeLabel = type === 'app' ? 'Applications' : type === 'os' ? 'Operating Systems' : 'Snapshots';
 	const emoji = typeLabel === 'Applications' ? '📦' : typeLabel === 'Operating Systems' ? '🐧' : '📸';
-	const text = `${emoji} *${typeLabel}*\n\nPage ${page + 1}/${totalPages} (${allImages.length} total)`;
+	const text = `${emoji} *${typeLabel}*\\n\\nPage ${page + 1}/${totalPages} (${allImages.length} total)`;
 	await editMessage(chatId, messageId, text, env, { inline_keyboard: keyboard });
 }
 
@@ -941,7 +941,7 @@ async function handleImageSearch(chatId, query, state, env) {
 	
 	keyboard.push([{ text: '◀️ Back', callback_data: `back_from_search_${state.region}` }]);
 	
-	await sendMessage(chatId, `🔍 Found ${results.length} result(s)\n\nPage 1/${totalPages}`, env, { inline_keyboard: keyboard });
+	await sendMessage(chatId, `🔍 Found ${results.length} result(s)\\n\\nPage 1/${totalPages}`, env, { inline_keyboard: keyboard });
 	await clearState(chatId, env);
 }
 
@@ -981,7 +981,7 @@ async function showSizes(chatId, region, imageId, env) {
 		.sort((a, b) => a.price_monthly - b.price_monthly);
 	
 	if (availableSizes.length === 0) {
-		const warningText = `⚠️ *No compatible sizes!*\n\n${image.name} requires:\n• Min ${image.min_disk_size}GB disk`;
+		const warningText = `⚠️ *No compatible sizes!*\\n\\n${image.name} requires:\\n• Min ${image.min_disk_size}GB disk`;
 		await sendMessage(chatId, warningText, env);
 		return;
 	}
@@ -994,7 +994,7 @@ async function showSizes(chatId, region, imageId, env) {
 		callback_data: `size_${region}_${imageId}_${size.slug}`
 	}]);
 	keyboard.push([{ text: '◀️ Back', callback_data: 'back_to_regions' }]);
-	const infoText = `✅ Image: *${image.name}*\n\n💰 Step 3: Select size`;
+	const infoText = `✅ Image: *${image.name}*\\n\\n💰 Step 3: Select size`;
 	await sendMessage(chatId, infoText, env, { inline_keyboard: keyboard });
 }
 
@@ -1012,7 +1012,7 @@ async function askDropletName(chatId, imageId, size, region, env) {
 		region, size, image: imageId, defaultName
 	}), { expirationTtl: 300 });
 	
-	const text = `📝 *Droplet Name*\n\nRegion: ${region}\nSize: ${size}\nImage ID: ${imageId}\n\nDefault: \`${defaultName}\``;
+	const text = `📝 *Droplet Name*\\n\\nRegion: ${region}\\nSize: ${size}\\nImage ID: ${imageId}\\n\\nDefault: \\`${defaultName}\\``;
 	const keyboard = {
 		inline_keyboard: [
 			[
@@ -1041,14 +1041,14 @@ async function confirmDropletCreation(chatId, name, region, size, imageId, env) 
 	const keysData = await doApiCall('/account/keys', 'GET', apiToken);
 	const sshKeys = keysData.ssh_keys || [];
 	if (sshKeys.length === 0) {
-		await sendMessage(chatId, '❌ *No SSH Keys*\n\nAdd SSH key to DigitalOcean first.', env);
+		await sendMessage(chatId, '❌ *No SSH Keys*\\n\\nAdd SSH key to DigitalOcean first.', env);
 		return;
 	}
 	const creationId = `create_${chatId}_${Date.now()}`;
 	await env.DROPLET_CREATION.put(creationId, JSON.stringify({
 		name, region, size, image: imageId, sshKeyIds: sshKeys.map(key => key.id)
 	}), { expirationTtl: 300 });
-	const text = `⚠️ *Confirm*\n\n*Name:* ${name}\n*Region:* ${region}\n*Size:* ${size}\n*Image ID:* ${imageId}\n*SSH Keys:* ${sshKeys.length}`;
+	const text = `⚠️ *Confirm*\\n\\n*Name:* ${name}\\n*Region:* ${region}\\n*Size:* ${size}\\n*Image ID:* ${imageId}\\n*SSH Keys:* ${sshKeys.length}`;
 	const keyboard = {
 		inline_keyboard: [
 			[{ text: '✅ Create', callback_data: `confirmcreate_${creationId}` }],
@@ -1079,7 +1079,7 @@ async function createDropletFromKV(chatId, messageId, creationId, env) {
 	});
 	if (result.droplet) {
 		const ip = result.droplet.networks.v4.find(net => net.type === 'public')?.ip_address || 'Assigning...';
-		const successText = `✅ *Created!*\n\n*Name:* ${result.droplet.name}\n*IP:* \`${ip}\`\n\nSSH: \`ssh root@${ip}\``;
+		const successText = `✅ *Created!*\\n\\n*Name:* ${result.droplet.name}\\n*IP:* \\`${ip}\\`\\n\\nSSH: \\`ssh root@${ip}\\``;
 		await editMessage(chatId, messageId, successText, env);
 		await env.DROPLET_CREATION.delete(creationId);
 	} else {
@@ -1127,9 +1127,9 @@ async function showDropletDetails(chatId, messageId, dropletId, env) {
 	
 	// Get note if exists
 	const note = await getDropletNote(dropletId, env);
-	const noteSection = note ? `\n\n📝 *Note:*\n\`\`\`\n${note}\n\`\`\`` : '';
+	const noteSection = note ? `\\n\\n📝 *Note:*\\n\\`\\`\\`\\n${note}\\n\\`\\`\\`` : '';
 	
-	const details = `📦 *Droplet*\n\n*Name:* ${droplet.name}\n*Status:* ${droplet.status}\n*Region:* ${droplet.region.name}\n*Size:* ${droplet.size_slug}\n*IP:* \`${ip}\`\n\nSSH: \`ssh root@${ip}\`${noteSection}`;
+	const details = `📦 *Droplet*\\n\\n*Name:* ${droplet.name}\\n*Status:* ${droplet.status}\\n*Region:* ${droplet.region.name}\\n*Size:* ${droplet.size_slug}\\n*IP:* \\`${ip}\\`\\n\\nSSH: \\`ssh root@${ip}\\`${noteSection}`;
 	
 	const keyboard = {
 		inline_keyboard: [
@@ -1150,16 +1150,16 @@ async function showNoteManagement(chatId, messageId, dropletId, env) {
 	let keyboard;
 	
 	if (note) {
-		text = `📝 *Droplet Note*\n\nCurrent note:\n\`\`\`\n${note}\n\`\`\``;
+		text = `📝 *Droplet Note*\\n\\nCurrent note:\\n\\`\\`\\`\\n${note}\\n\\`\\`\\``;
 		keyboard = {
 			inline_keyboard: [
-				[{ text: '✏️ Edit', callback_data: `edit_note_${dropletId}` }],
-				[{ text: '🗑️ Delete', callback_data: `delete_note_${dropletId}` }],
+				[{ text: '✏️ Edit Note', callback_data: `edit_note_${dropletId}` }],
+				[{ text: '🗑️ Delete Note', callback_data: `delete_note_${dropletId}` }],
 				[{ text: '◀️ Back', callback_data: `back_to_droplet_${dropletId}` }],
 			]
 		};
 	} else {
-		text = `📝 *Droplet Note*\n\nNo note for this droplet.`;
+		text = `📝 *Droplet Note*\\n\\nNo note for this droplet.`;
 		keyboard = {
 			inline_keyboard: [
 				[{ text: '✏️ Add Note', callback_data: `add_note_${dropletId}` }],
@@ -1178,7 +1178,7 @@ async function showDeleteConfirmation(chatId, messageId, dropletId, env) {
 			[{ text: '◀️ Back', callback_data: `droplet_${dropletId}` }],
 		]
 	};
-	await editMessage(chatId, messageId, '⚠️ Delete?\n\nCannot be undone!', env, keyboard);
+	await editMessage(chatId, messageId, '⚠️ Delete?\\n\\nCannot be undone!', env, keyboard);
 }
 
 async function deleteDroplet(chatId, messageId, dropletId, env) {
@@ -1230,7 +1230,7 @@ async function showRebuildImageTypeSelection(chatId, messageId, dropletId, env) 
 			[{ text: '◀️ Back', callback_data: `droplet_${dropletId}` }],
 		]
 	};
-	await editMessage(chatId, messageId, '🔄 *Rebuild Droplet*\n\n⚠️ All data will be deleted\n\nChoose image type:', env, keyboard);
+	await editMessage(chatId, messageId, '🔄 *Rebuild Droplet*\\n\\n⚠️ All data will be deleted\\n\\nChoose image type:', env, keyboard);
 }
 
 // Send new message (when accessed from back button after search)
@@ -1243,7 +1243,7 @@ async function showRebuildImageTypeSelectionNew(chatId, dropletId, env) {
 			[{ text: '◀️ Back', callback_data: `droplet_${dropletId}` }],
 		]
 	};
-	await sendMessage(chatId, '🔄 *Rebuild Droplet*\n\n⚠️ All data will be deleted\n\nChoose image type:', env, keyboard);
+	await sendMessage(chatId, '🔄 *Rebuild Droplet*\\n\\n⚠️ All data will be deleted\\n\\nChoose image type:', env, keyboard);
 }
 
 async function showRebuildImagesList(chatId, messageId, dropletId, type, page, env) {
@@ -1295,7 +1295,7 @@ async function showRebuildImagesList(chatId, messageId, dropletId, type, page, e
 	
 	const typeLabel = type === 'app' ? 'Applications' : type === 'os' ? 'Operating Systems' : 'Snapshots';
 	const emoji = typeLabel === 'Applications' ? '📦' : typeLabel === 'Operating Systems' ? '🐧' : '📸';
-	const text = `${emoji} *${typeLabel}*\n\n✅ Compatible with ${droplet.size_slug}\nPage ${page + 1}/${totalPages} (${allImages.length} total)`;
+	const text = `${emoji} *${typeLabel}*\\n\\n✅ Compatible with ${droplet.size_slug}\\nPage ${page + 1}/${totalPages} (${allImages.length} total)`;
 	await editMessage(chatId, messageId, text, env, { inline_keyboard: keyboard });
 }
 
@@ -1341,7 +1341,7 @@ async function handleRebuildImageSearch(chatId, query, state, env) {
 async function confirmRebuild(chatId, messageId, dropletId, imageId, env) {
 	const sessionId = `rebuild_${chatId}_${Date.now()}`;
 	await env.DROPLET_CREATION.put(sessionId, JSON.stringify({ dropletId, imageId }), { expirationTtl: 300 });
-	const text = `⚠️ *Confirm Rebuild*\n\nDroplet ID: ${dropletId}\nNew Image ID: ${imageId}\n\n*All data will be deleted!*`;
+	const text = `⚠️ *Confirm Rebuild*\\n\\nDroplet ID: ${dropletId}\\nNew Image ID: ${imageId}\\n\\n*All data will be deleted!*`;
 	const keyboard = {
 		inline_keyboard: [
 			[{ text: '✅ Yes, Rebuild', callback_data: `execute_rebuild_${sessionId}` }],
@@ -1367,7 +1367,7 @@ async function executeRebuild(chatId, messageId, sessionId, env) {
 	});
 	
 	if (result.action) {
-		await editMessage(chatId, messageId, `✅ *Rebuild Started!*\n\nStatus: ${result.action.status}`, env);
+		await editMessage(chatId, messageId, `✅ *Rebuild Started!*\\n\\nStatus: ${result.action.status}`, env);
 		await env.DROPLET_CREATION.delete(sessionId);
 	} else {
 		await editMessage(chatId, messageId, `❌ Failed: ${result.message || 'Unknown'}`, env);
