@@ -658,7 +658,20 @@ async function handleCallbackQuery(callbackQuery, env) {
 	} else if (data.startsWith('confirm_delete_')) {
 		const dropletId = data.replace('confirm_delete_', '');
 		await showDeleteConfirmation(chatId, messageId, dropletId, env);
-	} else if (data.startsWith('delete_')) {
+	}
+	// NEW: Note management handlers - MUST BE BEFORE delete_ handler!
+	else if (data.startsWith('delete_note_')) {
+		const dropletId = data.replace('delete_note_', '');
+		const success = await deleteDropletNote(dropletId, env);
+		await deleteMessage(chatId, messageId, env);
+		if (success) {
+			await sendMessage(chatId, '✅ *Note deleted!*', env);
+		} else {
+			await sendMessage(chatId, '❌ Failed to delete note.', env);
+		}
+	}
+	// Delete droplet handler - MUST BE AFTER delete_note_!
+	else if (data.startsWith('delete_')) {
 		const dropletId = data.replace('delete_', '');
 		await deleteDroplet(chatId, messageId, dropletId, env);
 	} else if (data === 'back_to_list') {
@@ -667,7 +680,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 		const dropletId = data.replace('rebuild_', '');
 		await showRebuildImageTypeSelection(chatId, messageId, dropletId, env);
 	}
-	// NEW: Note management handlers
+	// Other note handlers
 	else if (data.startsWith('manage_note_')) {
 		const dropletId = data.replace('manage_note_', '');
 		await showNoteManagement(chatId, messageId, dropletId, env);
@@ -683,11 +696,6 @@ async function handleCallbackQuery(callbackQuery, env) {
 		await setState(chatId, { step: 'editing_note', dropletId: dropletId }, env);
 		const text = `📝 *Edit Note*\n\nCurrent note:\n\`\`\`\n${currentNote || 'No note'}\n\`\`\`\n\nSend your new note:\n\n✅ Max ${MAX_NOTE_LENGTH} characters\n✅ Multi-line supported`;
 		await sendMessage(chatId, text, env);
-	} else if (data.startsWith('delete_note_')) {
-		const dropletId = data.replace('delete_note_', '');
-		await deleteDropletNote(dropletId, env);
-		await deleteMessage(chatId, messageId, env);
-		await sendMessage(chatId, '✅ *Note deleted!*', env);
 	} else if (data.startsWith('back_to_droplet_')) {
 		const dropletId = data.replace('back_to_droplet_', '');
 		await showDropletDetails(chatId, messageId, dropletId, env);
