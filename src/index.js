@@ -25,11 +25,16 @@
  * - Notes stored in KV: droplet_note_{dropletId}
  * - Auto-delete notes when droplet is deleted
  * - Notes display in droplet details with 📝 indicator
+ * - Rename Existing Droplets
+ * - Direct input with validation (a-z, A-Z, 0-9, ., -)
+ * - Confirmation before rename
+ * - Real-time update via DigitalOcean API
  * 
  * FLOW:
  * Create: Region → [OS | Apps | Snapshots] → Size (filtered) → Name → Confirm
  * Rebuild: [OS | Apps | Snapshots] → Confirm (filtered by droplet specs)
  * Notes: Droplet Details → [📝 Manage Note] → View/Edit/Delete
+ * Rename: Droplet Details → [🏷️ Rename] → Enter Name → Confirm → Execute
  */
 
 const ITEMS_PER_PAGE = 20;
@@ -413,7 +418,7 @@ async function handleMessage(message, env) {
 		return;
 	}
 	
-	// IMPROVED: Droplet rename with validation
+	// IMPROVED: Droplet rename with validation (for CREATE flow)
 	if (state?.step === 'renaming_droplet') {
 		const sessionId = state.sessionId;
 		
@@ -445,7 +450,39 @@ async function handleMessage(message, env) {
 		return;
 	}
 	
-	// NEW: Editing droplet note
+	// NEW: Renaming existing droplet
+	if (state?.step === 'renaming_existing_droplet') {
+		const dropletId = state.dropletId;
+		const oldName = state.oldName;
+		
+		if (!dropletId) {
+			await clearState(chatId, env);
+			await sendMessage(chatId, '❌ Session expired. Please try again.', env);
+			return;
+		}
+		
+		const newName = text.trim();
+		
+		// Validate name
+		if (!isValidDropletName(newName)) {
+			await sendMessage(chatId, '❌ *Invalid droplet name!*\n\n✅ Allowed characters:\n• Letters: a-z, A-Z\n• Numbers: 0-9\n• Special: . (dot) and - (dash)\n\nPlease try again:', env);
+			return;
+		}
+		
+		// Check if name is different
+		if (newName === oldName) {
+			await clearState(chatId, env);
+			await sendMessage(chatId, '❌ *New name is same as old name!*\n\nPlease use a different name.', env);
+			return;
+		}
+		
+		// Show confirmation
+		await clearState(chatId, env);
+		await confirmRenameDroplet(chatId, dropletId, oldName, newName, env);
+		return;
+	}
+	
+	// Editing droplet note
 	if (state?.step === 'editing_note') {
 		const dropletId = state.dropletId;
 		
@@ -481,7 +518,7 @@ async function handleMessage(message, env) {
 		await showMainMenu(chatId, env);
 	} else if (text === '/help') {
 		await clearState(chatId, env);
-		const helpText = `📚 *DigitalOcean Bot Help*\n\n*Commands:*\n• /menu - Show main menu\n• /droplets - List your droplets\n• /create - Create new droplet\n• /setapi - Set API token\n• /clearcache - Clear cached data\n• /help - Show this help\n\n*Features:*\n• Create droplets with OS/Apps/Snapshots\n• Rebuild existing droplets\n• Delete droplets\n• Search images\n• Add notes to droplets\n• Smart caching for faster performance\n\n*Get API Token:*\nhttps://cloud.digitalocean.com/account/api/tokens`;
+		const helpText = `📚 *DigitalOcean Bot Help*\n\n*Commands:*\n• /menu - Show main menu\n• /droplets - List your droplets\n• /create - Create new droplet\n• /setapi - Set API token\n• /clearcache - Clear cached data\n• /help - Show this help\n\n*Features:*\n• Create droplets with OS/Apps/Snapshots\n• Rebuild existing droplets\n• Rename droplets\n• Delete droplets\n• Search images\n• Add notes to droplets\n• Smart caching for faster performance\n\n*Get API Token:*\nhttps://cloud.digitalocean.com/account/api/tokens`;
 		await sendMessage(chatId, helpText, env);
 	} else if (text === '/setapi') {
 		await clearState(chatId, env);
@@ -552,7 +589,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 		return;
 	} else if (data === 'menu_help') {
 		await deleteMessage(chatId, messageId, env);
-		const helpText = `📚 *DigitalOcean Bot Help*\n\n*Commands:*\n• /menu - Show main menu\n• /droplets - List your droplets\n• /create - Create new droplet\n• /setapi - Set API token\n• /clearcache - Clear cached data\n• /help - Show this help\n\n*Features:*\n• Create droplets with OS/Apps/Snapshots\n• Rebuild existing droplets\n• Delete droplets\n• Search images\n• Add notes to droplets\n• Smart caching for faster performance\n\n*Get API Token:*\nhttps://cloud.digitalocean.com/account/api/tokens`;
+		const helpText = `📚 *DigitalOcean Bot Help*\n\n*Commands:*\n• /menu - Show main menu\n• /droplets - List your droplets\n• /create - Create new droplet\n• /setapi - Set API token\n• /clearcache - Clear cached data\n• /help - Show this help\n\n*Features:*\n• Create droplets with OS/Apps/Snapshots\n• Rebuild existing droplets\n• Rename droplets\n• Delete droplets\n• Search images\n• Add notes to droplets\n• Smart caching for faster performance\n\n*Get API Token:*\nhttps://cloud.digitalocean.com/account/api/tokens`;
 		await sendMessage(chatId, helpText, env);
 		return;
 	}
@@ -625,7 +662,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 		await deleteMessage(chatId, messageId, env);
 		await useDefaultNameAndConfirm(chatId, sessionId, env);
 	}
-	// Rename droplet
+	// Rename droplet (CREATE flow)
 	else if (data.startsWith('rename_droplet_')) {
 		const sessionId = data.replace('rename_droplet_', '');
 		
@@ -680,7 +717,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 		const dropletId = data.replace('rebuild_', '');
 		await showRebuildImageTypeSelection(chatId, messageId, dropletId, env);
 	}
-	// Other note handlers
+	// Note handlers
 	else if (data.startsWith('manage_note_')) {
 		const dropletId = data.replace('manage_note_', '');
 		await showNoteManagement(chatId, messageId, dropletId, env);
@@ -699,6 +736,36 @@ async function handleCallbackQuery(callbackQuery, env) {
 	} else if (data.startsWith('back_to_droplet_')) {
 		const dropletId = data.replace('back_to_droplet_', '');
 		await showDropletDetails(chatId, messageId, dropletId, env);
+	}
+	// NEW: Rename existing droplet handlers
+	else if (data.startsWith('rename_existing_')) {
+		const dropletId = data.replace('rename_existing_', '');
+		
+		// Get droplet details
+		const apiToken = await getUserApiToken(chatId, env);
+		const dropletData = await doApiCall(`/droplets/${dropletId}`, 'GET', apiToken);
+		
+		if (!dropletData.droplet) {
+			await editMessage(chatId, messageId, '❌ Droplet not found.', env);
+			return;
+		}
+		
+		const droplet = dropletData.droplet;
+		await deleteMessage(chatId, messageId, env);
+		
+		// Set state
+		await setState(chatId, { 
+			step: 'renaming_existing_droplet', 
+			dropletId: dropletId,
+			oldName: droplet.name
+		}, env);
+		
+		// Send message
+		const text = `🏷️ *Rename Droplet*\n\nCurrent name: \`${droplet.name}\`\n\n✅ Allowed characters: a-z, A-Z, 0-9, . and -\n\nSend new droplet name:`;
+		await sendMessage(chatId, text, env);
+	} else if (data.startsWith('confirm_rename_')) {
+		const sessionId = data.replace('confirm_rename_', '');
+		await executeRename(chatId, messageId, sessionId, env);
 	}
 	// Rebuild image type
 	else if (data.startsWith('rebuildtype_')) {
@@ -1134,6 +1201,7 @@ async function showDropletDetails(chatId, messageId, dropletId, env) {
 	const keyboard = {
 		inline_keyboard: [
 			[{ text: '📝 Manage Note', callback_data: `manage_note_${dropletId}` }],
+			[{ text: '🏷️ Rename', callback_data: `rename_existing_${dropletId}` }],
 			[{ text: '🔄 Rebuild', callback_data: `rebuild_${dropletId}` }],
 			[{ text: '🗑️ Delete', callback_data: `confirm_delete_${dropletId}` }],
 			[{ text: '◀️ Back', callback_data: 'back_to_list' }],
@@ -1216,6 +1284,50 @@ async function editMessageToDropletList(chatId, messageId, env) {
 	}
 	
 	await editMessage(chatId, messageId, 'Your Droplets:', env, { inline_keyboard: keyboard });
+}
+
+// === RENAME DROPLET ===
+
+// Confirm rename with old and new names
+async function confirmRenameDroplet(chatId, dropletId, oldName, newName, env) {
+	const sessionId = `rename_${chatId}_${Date.now()}`;
+	await env.DROPLET_CREATION.put(sessionId, JSON.stringify({ dropletId, newName }), { expirationTtl: 300 });
+	
+	const text = `⚠️ *Confirm Rename*\n\nDroplet ID: ${dropletId}\n\nOld name: \`${oldName}\`\nNew name: \`${newName}\``;
+	const keyboard = {
+		inline_keyboard: [
+			[{ text: '✅ Yes, Rename', callback_data: `confirm_rename_${sessionId}` }],
+			[{ text: '◀️ Cancel', callback_data: `droplet_${dropletId}` }],
+		]
+	};
+	await sendMessage(chatId, text, env, keyboard);
+}
+
+// Execute rename API call
+async function executeRename(chatId, messageId, sessionId, env) {
+	const apiToken = await getUserApiToken(chatId, env);
+	const dataStr = await env.DROPLET_CREATION.get(sessionId);
+	
+	if (!dataStr) {
+		await editMessage(chatId, messageId, '❌ Session expired.', env);
+		return;
+	}
+	
+	const data = JSON.parse(dataStr);
+	await editMessage(chatId, messageId, '⏳ Renaming...', env);
+	
+	// Call DigitalOcean API to rename
+	const result = await doApiCall(`/droplets/${data.dropletId}/actions`, 'POST', apiToken, {
+		type: 'rename',
+		name: data.newName,
+	});
+	
+	if (result.action) {
+		await editMessage(chatId, messageId, `✅ *Rename Started!*\n\nNew name: \`${data.newName}\`\n\nStatus: ${result.action.status}`, env);
+		await env.DROPLET_CREATION.delete(sessionId);
+	} else {
+		await editMessage(chatId, messageId, `❌ Failed: ${result.message || 'Unknown'}`, env);
+	}
 }
 
 // === REBUILD ===
